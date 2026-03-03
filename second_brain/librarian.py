@@ -1,4 +1,13 @@
-"""The Librarian - AI-driven markdown organizer using Groq API."""
+"""The Librarian - AI-driven markdown organizer using Groq API.
+
+Two-pass architecture:
+  Pass 1 (Plan):  Reads dump + file list -> decides WHERE content goes
+                  (create/append/todo), returns lightweight plan with no
+                  heavy content, just descriptions and todo one-liners.
+  Pass 2 (Write): For each create/append action, sends the plan entry +
+                  target file content as context -> returns polished
+                  markdown that fits naturally into the file.
+"""
 
 import json
 import re
@@ -10,62 +19,97 @@ from groq import Groq
 from . import config
 
 
-SYSTEM_PROMPT = """\
-You are a "Second Brain" librarian. Your job is to process a dump of raw \
-thoughts and organize them into a structured knowledge base of Markdown files.
+# ---------------------------------------------------------------------------
+# Pass 1: Planning
+# ---------------------------------------------------------------------------
+
+PLAN_SYSTEM_PROMPT = """\
+You are a "Second Brain" librarian. Your job is to READ a dump of raw \
+thoughts and PLAN how to organize them into a structured Markdown knowledge \
+base. You do NOT write the final content in this step -- only the plan.
 
 RULES:
-1. You will receive:
+1. You receive:
    - A dump of raw thoughts (the user's input).
-   - A list of EXISTING files already in the knowledge base.
+   - A list of EXISTING .md files in the knowledge base.
 
-2. For each distinct thought/topic in the dump:
-   a) TODO DETECTION: If a thought contains a task, action item, or anything \
-that implies something needs to be done (keywords like "todo", "need to", \
-"should", "must", "have to", "want to", "look into", "figure out", "fix", \
-"implement", "build", "set up", "learn", "explore", "check", "try", \
-"remember to", "don't forget"), generate a "todo" action. Summarize the task \
-into a short, punchy one-liner. Each todo item should be a SINGLE concise \
-line like a checklist item, not a paragraph.
-   b) SEMANTIC MATCH: If a thought relates to an existing file (e.g., \
-a thought about "TLS certificates" matches a file named "https.md" or \
-"networking.md"), generate an APPEND action to add content to that file.
-   c) NEW THOUGHT: If no existing file matches, generate a CREATE action \
-with a clean snake_case.md filename.
-   NOTE: A single thought can produce BOTH a todo action AND an append/create \
-action. The todo captures the task, the append/create captures the knowledge.
+2. For each distinct thought/topic in the dump, decide:
 
-3. CONTENT FORMATTING:
-   - For TODO actions: The content field must be a SHORT one-line summary \
-of the task. No headers, no markdown formatting, just the task. Examples: \
-"Research certificate pinning for mobile apps", "Set up mTLS between services".
-   - For APPEND actions: Start content with a timestamped header: \
-"## Update - YYYY-MM-DD HH:MM" followed by the organized content.
-   - For CREATE actions: Start with a "# Title" header, then organized content.
-   - ALWAYS insert [[Wikilinks]] to other relevant files from the existing \
-files list. For example, if a thought about DNS mentions HTTP, and "https.md" \
-exists, write "...related to [[https]]...". Use the filename without .md \
-extension inside the wikilink brackets.
-   - Be thorough but concise. Preserve all information from the dump.
+   a) TODO DETECTION: If a thought contains a task or action item \
+(keywords like "todo", "need to", "should", "must", "have to", "want to", \
+"look into", "figure out", "fix", "implement", "build", "set up", "learn", \
+"explore", "check", "try", "remember to", "don't forget"), emit a "todo" \
+action. The content field MUST be the final one-liner task text (short, \
+punchy, no markdown). Todos are resolved fully in this pass.
 
-4. OUTPUT FORMAT: You MUST return a valid JSON object.
-   - Use \\n for newlines inside content strings. NEVER use literal newlines \
-inside JSON string values.
-   - Escape all special characters properly in JSON strings.
-   - Action types are: "append", "create", or "todo".
-   - For "todo" actions, target is always "todo.md".
-   - Schema:
-{"actions": [\
-{"type": "todo", "target": "todo.md", "content": "Short task summary"}, \
-{"type": "append", "target": "existing_file.md", "content": "## Update\\n\\nText here"}, \
-{"type": "create", "target": "new_file.md", "content": "# Title\\n\\nText here"}]}
+   b) SEMANTIC MATCH: If a thought relates to an existing file, emit an \
+"append" action with a brief description of what to add and WHERE in the \
+file it should go (e.g., "after the TLS section", "at the end"). Do NOT \
+write the actual markdown content -- just describe the intent.
+
+   c) NEW TOPIC: If no existing file matches, emit a "create" action with \
+a clean snake_case.md filename and a brief description of the content.
+
+   NOTE: A single thought can produce BOTH a todo AND an append/create.
+
+3. For append/create actions, include an "excerpt" field containing the \
+EXACT relevant text from the dump that this action is based on. This will \
+be used in the next step to generate the actual content.
+
+4. Include a "wikilinks" field listing filenames (without .md) from the \
+existing files list that should be linked to via [[wikilinks]] in the \
+final content.
+
+5. OUTPUT FORMAT: Valid JSON only.
+   {"actions": [
+     {"type": "todo", "content": "Short task summary"},
+     {"type": "append", "target": "existing_file.md", \
+"description": "Add notes about X after the Y section", \
+"excerpt": "raw text from dump...", \
+"wikilinks": ["other_file", "another_file"]},
+     {"type": "create", "target": "new_topic.md", \
+"description": "New page about X covering Y and Z", \
+"excerpt": "raw text from dump...", \
+"wikilinks": ["related_file"]}
+   ]}
 
 CRITICAL: Return ONLY valid JSON. No markdown fences, no explanation.\
 """
 
 
-def build_user_prompt(dump_text: str, existing_files: list[str]) -> str:
-    """Build the user prompt with dump content and file list."""
+# ---------------------------------------------------------------------------
+# Pass 2: Writing
+# ---------------------------------------------------------------------------
+
+WRITE_SYSTEM_PROMPT = """\
+You are a "Second Brain" content writer. You receive a PLAN describing what \
+to write, the RAW EXCERPT from the user's dump, and (for appends) the \
+EXISTING FILE content so you can match its style and structure.
+
+RULES:
+1. Write clean, well-structured Markdown.
+2. INSERT [[wikilinks]] to the files listed in the plan. Use the filename \
+without .md inside the brackets, e.g., [[networking]].
+3. For APPEND actions:
+   - Start with a timestamped header: "## Update - YYYY-MM-DD HH:MM"
+   - Write content that flows naturally with the existing file.
+   - Match the existing file's style, heading levels, and tone.
+   - Do NOT repeat information already in the file.
+4. For CREATE actions:
+   - Start with a "# Title" header (human-readable, not snake_case).
+   - Write thorough, organized content.
+5. Preserve ALL information from the excerpt. Don't drop details.
+6. Be CONCISE. Write like personal notes, not an essay. No filler phrases \
+like "it's worth noting", "this can be particularly useful", etc. \
+Get to the point. Short sentences. Use bullet points where appropriate.
+
+OUTPUT FORMAT: Return ONLY the raw Markdown content to write. \
+No JSON wrapping, no code fences, just the markdown text.\
+"""
+
+
+def _build_plan_user_prompt(dump_text: str, existing_files: list[str]) -> str:
+    """Build the user prompt for the planning pass."""
     files_list = "\n".join(f"  - {f}" for f in existing_files) if existing_files else "  (none - knowledge base is empty)"
 
     return f"""\
@@ -75,11 +119,45 @@ def build_user_prompt(dump_text: str, existing_files: list[str]) -> str:
 ## Raw Thoughts Dump:
 {dump_text}
 
-## Current Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M")}
-
-Process these thoughts and return the JSON actions.\
+Analyze these thoughts and return the JSON plan.\
 """
 
+
+def _build_write_user_prompt(
+    action: dict,
+    existing_content: str | None,
+    timestamp: str,
+) -> str:
+    """Build the user prompt for a single write action."""
+    parts = []
+
+    parts.append(f"## Action: {action['type'].upper()}")
+    parts.append(f"## Target: {action['target']}")
+    parts.append(f"## Description: {action.get('description', 'Write content')}")
+    parts.append(f"## Timestamp: {timestamp}")
+
+    wikilinks = action.get("wikilinks", [])
+    if wikilinks:
+        parts.append(f"## Wikilinks to include: {', '.join(f'[[{w}]]' for w in wikilinks)}")
+
+    parts.append(f"\n## Raw Excerpt from Dump:\n{action.get('excerpt', '')}")
+
+    if existing_content is not None:
+        # For large files, send last 200 lines for context rather than entire file
+        lines = existing_content.splitlines()
+        if len(lines) > 200:
+            parts.append(f"\n## Existing File Content (last 200 of {len(lines)} lines):")
+            parts.append("\n".join(lines[-200:]))
+        else:
+            parts.append(f"\n## Existing File Content:\n{existing_content}")
+
+    parts.append("\nWrite the markdown content now.")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# JSON repair + parsing (unchanged)
+# ---------------------------------------------------------------------------
 
 def _repair_json(text: str) -> str:
     """Attempt to repair broken JSON from LLM output.
@@ -98,7 +176,6 @@ def _repair_json(text: str) -> str:
         text = text.strip()
 
     # Extract just the JSON object if there's surrounding text
-    # Find the first { and last }
     first_brace = text.find("{")
     last_brace = text.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
@@ -121,7 +198,6 @@ def _repair_json(text: str) -> str:
 
         if ch == '"' :
             # Check this isn't an incorrectly unescaped quote inside a string.
-            # A quote toggle is legitimate if it's at a structural position.
             if in_string:
                 # Peek ahead: if the next non-whitespace char is a structural
                 # JSON char (:, ,, }, ]) then this closes the string.
@@ -131,20 +207,17 @@ def _repair_json(text: str) -> str:
                     result.append(ch)
                     i += 1
                     continue
-                # Also handle end-of-text
                 if not rest:
                     in_string = False
                     result.append(ch)
                     i += 1
                     continue
-                # Check if this quote starts a new key (the previous value ended)
-                # Pattern: "..." "next_key" -- missing comma, but closing is valid
                 if rest and rest[0] == '"':
                     in_string = False
                     result.append(ch)
                     i += 1
                     continue
-                # Otherwise it's an unescaped quote inside the string -- escape it
+                # Otherwise it's an unescaped quote inside the string
                 result.append('\\"')
                 i += 1
                 continue
@@ -243,14 +316,22 @@ def _validate_actions(result: dict) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
 def process_dump(dump_text: str | None = None) -> dict:
-    """Process the dump file through the Groq LLM and return actions.
+    """Process the dump file through 2 LLM passes and return actions with content.
+
+    Pass 1: Plan — decide where each thought goes.
+    Pass 2: Write — generate polished content for each create/append action.
 
     Args:
         dump_text: Optional raw text. If None, reads from dump.md.
 
     Returns:
-        Dict with "actions" list of append/create operations.
+        Dict with "actions" list of append/create/todo operations,
+        where create/append actions have their final "content" populated.
     """
     if dump_text is None:
         dump_path = config.DUMP_FILE
@@ -263,23 +344,62 @@ def process_dump(dump_text: str | None = None) -> dict:
 
     existing_files = config.get_brain_files()
     api_key = config.get_groq_api_key()
-
     client = Groq(api_key=api_key)
-    response = client.chat.completions.create(
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # ------ Pass 1: Plan ------
+    plan_response = client.chat.completions.create(
         model=config.GROQ_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(dump_text, existing_files)},
+            {"role": "system", "content": PLAN_SYSTEM_PROMPT},
+            {"role": "user", "content": _build_plan_user_prompt(dump_text, existing_files)},
         ],
         temperature=0.3,
-        max_tokens=4096,
+        max_tokens=2048,
         response_format={"type": "json_object"},
     )
 
-    response_text: str = response.choices[0].message.content or ""
-    if not response_text:
-        raise ValueError("LLM returned empty response")
-    return parse_llm_response(response_text)
+    plan_text: str = plan_response.choices[0].message.content or ""
+    if not plan_text:
+        raise ValueError("LLM returned empty response for planning pass")
+
+    plan = parse_llm_response(plan_text)
+
+    # ------ Pass 2: Write content for each create/append action ------
+    brain_dir = config.BRAIN_DIR
+    write_actions = [a for a in plan["actions"] if a["type"] in ("create", "append")]
+
+    for action in write_actions:
+        target_path = brain_dir / action["target"]
+
+        # Load existing file content for appends (and creates that hit existing files)
+        existing_content = None
+        if target_path.exists():
+            existing_content = target_path.read_text()
+
+        write_response = client.chat.completions.create(
+            model=config.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": WRITE_SYSTEM_PROMPT},
+                {"role": "user", "content": _build_write_user_prompt(
+                    action, existing_content, timestamp,
+                )},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+        content: str = write_response.choices[0].message.content or ""
+        # Strip any accidental code fences the LLM might wrap around markdown
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:markdown|md)?\s*\n?", "", content)
+            content = re.sub(r"\n?```\s*$", "", content)
+            content = content.strip()
+
+        action["content"] = content
+
+    return plan
 
 
 def execute_actions(actions: dict) -> list[str]:
@@ -305,7 +425,11 @@ def execute_actions(actions: dict) -> list[str]:
             continue
 
         target = brain_dir / action["target"]
-        content = action["content"]
+        content = action.get("content", "")
+
+        if not content:
+            summaries.append(f"SKIP (no content) -> {action['target']}")
+            continue
 
         if action["type"] == "append":
             if target.exists():
