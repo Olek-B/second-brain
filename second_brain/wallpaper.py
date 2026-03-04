@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from . import config
+from .plugins import get_manager
 
 
 def _parse_todos() -> list[tuple[bool, str]]:
@@ -13,6 +14,11 @@ def _parse_todos() -> list[tuple[bool, str]]:
     Only returns unchecked items (- [ ]) for the wallpaper overlay,
     limited to the most recent ones that fit.
     """
+    pm = get_manager()
+
+    # --- Hook: before_parse_todos ---
+    pm.dispatch_before_parse_todos()
+
     todo_path = config.TODO_FILE
     if not todo_path.exists():
         return []
@@ -29,6 +35,9 @@ def _parse_todos() -> list[tuple[bool, str]]:
             text = m.group(2).strip()
             items.append((done, text))
 
+    # --- Hook: after_parse_todos (mutating) ---
+    items = pm.dispatch_after_parse_todos(items)
+
     return items
 
 
@@ -38,6 +47,8 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
     Uses ImageMagick to draw text on a semi-transparent dark panel.
     Returns the path to the overlay PNG, or None if no todos exist.
     """
+    pm = get_manager()
+
     if output_path is None:
         output_path = config.TODO_OVERLAY
 
@@ -48,7 +59,12 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
     if not pending:
         # Clean up old overlay if no pending todos
         output_path.unlink(missing_ok=True)
+        # --- Hook: after_render_todo_overlay ---
+        pm.dispatch_after_render_todo_overlay(None)
         return None
+
+    # --- Hook: before_render_todo_overlay ---
+    pm.dispatch_before_render_todo_overlay(pending)
 
     width, height = config.get_monitor_resolution()
     wal = config.get_wal_colors()
@@ -141,6 +157,9 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
         timeout=15,
     )
 
+    # --- Hook: after_render_todo_overlay ---
+    pm.dispatch_after_render_todo_overlay(output_path)
+
     return output_path
 
 
@@ -154,6 +173,8 @@ def composite_wallpaper(
     Uses ImageMagick to layer both overlays onto the base wallpaper.
     Returns the path to the composited wallpaper.
     """
+    pm = get_manager()
+
     if graph_path is None:
         graph_path = config.GRAPH_OUTPUT
     if output_path is None:
@@ -174,6 +195,9 @@ def composite_wallpaper(
             f"Graph overlay not found at {graph_path}. "
             "Run the graph engine first."
         )
+
+    # --- Hook: before_composite ---
+    pm.dispatch_before_composite(graph_path, wallpaper_path)
 
     width, height = config.get_monitor_resolution()
 
@@ -214,6 +238,9 @@ def composite_wallpaper(
         text=True,
         timeout=30,
     )
+
+    # --- Hook: after_composite ---
+    pm.dispatch_after_composite(output_path)
 
     return output_path
 
@@ -278,34 +305,44 @@ def set_wallpaper(wallpaper_path: Path | None = None) -> bool:
 
     Returns True if successful.
     """
+    pm = get_manager()
+
     if wallpaper_path is None:
         wallpaper_path = config.WALLPAPER_OUTPUT
 
     if not wallpaper_path.exists():
         raise FileNotFoundError(f"Wallpaper not found: {wallpaper_path}")
 
+    # --- Hook: before_set_wallpaper ---
+    pm.dispatch_before_set_wallpaper(wallpaper_path)
+
+    success = False
+
     # Try special handler first (e.g., hyprpaper needs multi-step commands)
     if config.set_wallpaper_special(wallpaper_path):
         _update_wallpaper_caches(wallpaper_path)
-        return True
+        success = True
+    else:
+        # Standard single-command backend
+        cmd = config.get_wallpaper_set_cmd(wallpaper_path)
+        if cmd:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                _update_wallpaper_caches(wallpaper_path)
+                success = True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
 
-    # Standard single-command backend
-    cmd = config.get_wallpaper_set_cmd(wallpaper_path)
-    if cmd:
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            _update_wallpaper_caches(wallpaper_path)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
+    # --- Hook: after_set_wallpaper ---
+    pm.dispatch_after_set_wallpaper(wallpaper_path, success)
 
-    return False
+    return success
 
 
 def refresh_wallpaper() -> str:
@@ -313,6 +350,11 @@ def refresh_wallpaper() -> str:
 
     Returns a status message.
     """
+    pm = get_manager()
+
+    # --- Hook: before_refresh_wallpaper ---
+    pm.dispatch_before_refresh_wallpaper()
+
     from .graph import render_graph
 
     try:
@@ -320,12 +362,17 @@ def refresh_wallpaper() -> str:
         composited = composite_wallpaper(graph_path=graph_path)
         success = set_wallpaper(composited)
         if success:
-            return f"Wallpaper updated: {composited}"
+            result = f"Wallpaper updated: {composited}"
         else:
             backend = config.get_wallpaper_backend() or "none detected"
-            return (
+            result = (
                 f"Graph composited to {composited} but could not set wallpaper. "
                 f"Backend: {backend}. Run 'second-brain setup' to configure."
             )
     except Exception as e:
-        return f"Error: {e}"
+        result = f"Error: {e}"
+
+    # --- Hook: after_refresh_wallpaper ---
+    pm.dispatch_after_refresh_wallpaper(result)
+
+    return result

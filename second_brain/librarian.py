@@ -17,6 +17,7 @@ from pathlib import Path
 from groq import Groq
 
 from . import config
+from .plugins import get_manager
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ to write, the RAW EXCERPT from the user's dump, and (for appends) the \
 EXISTING FILE content so you can match its style and structure.
 
 RULES:
-1. Write clean, well-structured Markdown.
+1. Write clean Markdown. Keep it SHORT — these are personal notes, not articles.
 2. INSERT [[wikilinks]] to the files listed in the plan. Use the filename \
 without .md inside the brackets, e.g., [[networking]].
 3. For APPEND actions:
@@ -97,11 +98,13 @@ without .md inside the brackets, e.g., [[networking]].
    - Do NOT repeat information already in the file.
 4. For CREATE actions:
    - Start with a "# Title" header (human-readable, not snake_case).
-   - Write thorough, organized content.
-5. Preserve ALL information from the excerpt. Don't drop details.
-6. Be CONCISE. Write like personal notes, not an essay. No filler phrases \
-like "it's worth noting", "this can be particularly useful", etc. \
-Get to the point. Short sentences. Use bullet points where appropriate.
+5. KEEP THE USER'S ORIGINAL WORDS. Restructure and format them into clean \
+markdown, but do NOT rewrite, paraphrase, expand, or add advice. \
+Do NOT add content that wasn't in the excerpt. Do NOT turn a short note \
+into an essay. A 2-line thought stays roughly 2 lines.
+6. Use bullet points where the user listed things. Use short sentences.
+7. No filler phrases like "it's worth noting", "this can be particularly \
+useful", "consider exploring", etc. No generic advice or conclusions.
 
 OUTPUT FORMAT: Return ONLY the raw Markdown content to write. \
 No JSON wrapping, no code fences, just the markdown text.\
@@ -333,6 +336,8 @@ def process_dump(dump_text: str | None = None) -> dict:
         Dict with "actions" list of append/create/todo operations,
         where create/append actions have their final "content" populated.
     """
+    pm = get_manager()
+
     if dump_text is None:
         dump_path = config.DUMP_FILE
         if not dump_path.exists():
@@ -342,28 +347,39 @@ def process_dump(dump_text: str | None = None) -> dict:
     if not dump_text:
         return {"actions": [], "error": "dump.md is empty"}
 
+    # --- Hook: before_process_dump (mutating) ---
+    dump_text = pm.dispatch_before_process_dump(dump_text)
+
     existing_files = config.get_brain_files()
     api_key = config.get_groq_api_key()
     client = Groq(api_key=api_key)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # ------ Pass 1: Plan ------
-    plan_response = client.chat.completions.create(
-        model=config.GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": _build_plan_user_prompt(dump_text, existing_files)},
-        ],
-        temperature=0.3,
-        max_tokens=2048,
-        response_format={"type": "json_object"},
-    )
+    try:
+        plan_response = client.chat.completions.create(
+            model=config.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": PLAN_SYSTEM_PROMPT},
+                {"role": "user", "content": _build_plan_user_prompt(dump_text, existing_files)},
+            ],
+            temperature=0.3,
+            max_tokens=2048,
+            response_format={"type": "json_object"},
+        )
 
-    plan_text: str = plan_response.choices[0].message.content or ""
-    if not plan_text:
-        raise ValueError("LLM returned empty response for planning pass")
+        plan_text: str = plan_response.choices[0].message.content or ""
+        if not plan_text:
+            raise ValueError("LLM returned empty response for planning pass")
 
-    plan = parse_llm_response(plan_text)
+        plan = parse_llm_response(plan_text)
+    except Exception as e:
+        # --- Hook: on_plan_error ---
+        pm.dispatch_on_plan_error(e)
+        raise
+
+    # --- Hook: after_plan (mutating) ---
+    plan = pm.dispatch_after_plan(plan)
 
     # ------ Pass 2: Write content for each create/append action ------
     brain_dir = config.BRAIN_DIR
@@ -376,6 +392,9 @@ def process_dump(dump_text: str | None = None) -> dict:
         existing_content = None
         if target_path.exists():
             existing_content = target_path.read_text()
+
+        # --- Hook: before_write_action (mutating) ---
+        action = pm.dispatch_before_write_action(action, existing_content)
 
         write_response = client.chat.completions.create(
             model=config.GROQ_MODEL,
@@ -399,6 +418,12 @@ def process_dump(dump_text: str | None = None) -> dict:
 
         action["content"] = content
 
+        # --- Hook: after_write_action ---
+        pm.dispatch_after_write_action(action)
+
+    # --- Hook: after_process_dump ---
+    pm.dispatch_after_process_dump(plan)
+
     return plan
 
 
@@ -407,14 +432,20 @@ def execute_actions(actions: dict) -> list[str]:
 
     Returns list of summary strings describing what was done.
     """
+    pm = get_manager()
     brain_dir = config.BRAIN_DIR
     brain_dir.mkdir(parents=True, exist_ok=True)
     summaries = []
 
+    action_list = actions.get("actions", [])
+
+    # --- Hook: before_execute_actions (mutating) ---
+    action_list = pm.dispatch_before_execute_actions(action_list)
+
     # Collect all todo items first so we can batch-write them
     todo_items: list[str] = []
 
-    for action in actions.get("actions", []):
+    for action in action_list:
         if action["type"] == "todo":
             # Summarize to a single clean line
             line = action["content"].strip().split("\n")[0].strip()
@@ -431,27 +462,40 @@ def execute_actions(actions: dict) -> list[str]:
             summaries.append(f"SKIP (no content) -> {action['target']}")
             continue
 
+        # --- Hook: before_write_file (mutating) ---
+        content = pm.dispatch_before_write_file(action, target, content)
+
+        summary = ""
         if action["type"] == "append":
             if target.exists():
                 existing = target.read_text()
                 target.write_text(existing.rstrip() + "\n\n" + content + "\n")
-                summaries.append(f"APPEND -> {action['target']}")
+                summary = f"APPEND -> {action['target']}"
             else:
                 # File doesn't exist despite match; create it instead
                 target.write_text(content + "\n")
-                summaries.append(f"CREATE (fallback) -> {action['target']}")
+                summary = f"CREATE (fallback) -> {action['target']}"
 
         elif action["type"] == "create":
             if target.exists():
                 # Avoid overwriting; append instead
                 existing = target.read_text()
                 target.write_text(existing.rstrip() + "\n\n" + content + "\n")
-                summaries.append(f"APPEND (exists) -> {action['target']}")
+                summary = f"APPEND (exists) -> {action['target']}"
             else:
                 target.write_text(content + "\n")
-                summaries.append(f"CREATE -> {action['target']}")
+                summary = f"CREATE -> {action['target']}"
+
+        summaries.append(summary)
+
+        # --- Hook: after_write_file ---
+        pm.dispatch_after_write_file(action, target, summary)
 
     # Write todos to todo.md
+    if todo_items:
+        # --- Hook: before_write_todos (mutating) ---
+        todo_items = pm.dispatch_before_write_todos(todo_items)
+
     if todo_items:
         todo_path = config.TODO_FILE
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -468,10 +512,24 @@ def execute_actions(actions: dict) -> list[str]:
         todo_path.write_text(existing + "\n".join(new_lines) + "\n")
         summaries.append(f"TODO -> {len(todo_items)} task(s)")
 
+        # --- Hook: after_write_todos ---
+        pm.dispatch_after_write_todos(len(todo_items))
+
+    # --- Hook: after_execute_actions ---
+    pm.dispatch_after_execute_actions(summaries)
+
     return summaries
 
 
 def clear_dump():
     """Clear the dump file after processing."""
+    pm = get_manager()
+
+    # --- Hook: before_clear_dump ---
+    pm.dispatch_before_clear_dump()
+
     if config.DUMP_FILE.exists():
         config.DUMP_FILE.write_text("")
+
+    # --- Hook: after_clear_dump ---
+    pm.dispatch_after_clear_dump()

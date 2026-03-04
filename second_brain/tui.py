@@ -22,6 +22,7 @@ from textual.widgets import (
 )
 
 from . import config
+from .plugins import get_manager
 
 
 class FileList(ListView):
@@ -196,6 +197,15 @@ class BrainApp(App):
         self._refresh_file_list()
         self._set_status("Ready. [e]dit | [g]raph | [p]rocess dump | [d]ump | [r]efresh | [q]uit")
 
+        # --- Hook: on_tui_start ---
+        pm = get_manager()
+        pm.dispatch_on_tui_start(self)
+
+    def on_unmount(self) -> None:
+        # --- Hook: on_tui_stop ---
+        pm = get_manager()
+        pm.dispatch_on_tui_stop()
+
     def _refresh_file_list(self) -> None:
         """Reload files from brain directory into the sidebar."""
         self._files = config.get_brain_files()
@@ -210,6 +220,10 @@ class BrainApp(App):
         if dump_exists:
             self._set_status(" dump.md has content! Press [p] to process it.")
 
+        # --- Hook: on_tui_refresh_list ---
+        pm = get_manager()
+        pm.dispatch_on_tui_refresh_list(self._files)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle file selection in sidebar."""
         idx = event.list_view.index
@@ -217,6 +231,10 @@ class BrainApp(App):
             fname = self._files[idx]
             self._selected_file = fname
             self._show_preview(fname)
+
+            # --- Hook: on_file_selected ---
+            pm = get_manager()
+            pm.dispatch_on_file_selected(fname)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Show preview when highlighting changes."""
@@ -232,6 +250,10 @@ class BrainApp(App):
         target_fname = event.target
         if not target_fname.endswith(".md"):
             target_fname += ".md"
+
+        # --- Hook: on_wikilink_clicked ---
+        pm = get_manager()
+        pm.dispatch_on_wikilink_clicked(event.target)
 
         # Try to find and select the file in the sidebar
         try:
@@ -254,6 +276,11 @@ class BrainApp(App):
 
         if fpath.exists():
             content = fpath.read_text()
+
+            # --- Hook: on_file_preview (mutating) ---
+            pm = get_manager()
+            content = pm.dispatch_on_file_preview(fname, content)
+
             preview.set_content(content)
         else:
             preview.set_content("File not found")
@@ -270,6 +297,10 @@ class BrainApp(App):
 
         editor = os.environ.get("EDITOR", "nvim")
         fpath = config.BRAIN_DIR / self._selected_file
+
+        # --- Hook: on_tui_edit_file ---
+        pm = get_manager()
+        pm.dispatch_on_tui_edit_file(self._selected_file)
 
         with self.app.suspend():
             subprocess.run([editor, str(fpath)])
@@ -295,6 +326,10 @@ class BrainApp(App):
         """Process dump.md through the Librarian."""
         self._set_status(" Processing dump.md with AI...")
 
+        # --- Hook: before_tui_process_dump ---
+        pm = get_manager()
+        pm.dispatch_before_tui_process_dump()
+
         try:
             from .librarian import process_dump, execute_actions, clear_dump
 
@@ -315,6 +350,9 @@ class BrainApp(App):
             )
             self.app.call_from_thread(self._refresh_file_list)
 
+            # --- Hook: after_tui_process_dump ---
+            pm.dispatch_after_tui_process_dump(summaries)
+
         except Exception as e:
             self.app.call_from_thread(
                 self._set_status, f" Error: {e}"
@@ -325,10 +363,17 @@ class BrainApp(App):
         """Generate graph and refresh wallpaper."""
         self._set_status(" Generating knowledge graph...")
 
+        # --- Hook: before_tui_graph ---
+        pm = get_manager()
+        pm.dispatch_before_tui_graph()
+
         try:
             from .wallpaper import refresh_wallpaper
             result = refresh_wallpaper()
             self.app.call_from_thread(self._set_status, f" {result}")
+
+            # --- Hook: after_tui_graph ---
+            pm.dispatch_after_tui_graph(result)
         except Exception as e:
             self.app.call_from_thread(
                 self._set_status, f" Graph error: {e}"
@@ -344,6 +389,10 @@ class BrainApp(App):
         """Run the AI janitor to fix formatting and add missing links."""
         self._set_status(" Running janitor (formatting + links)...")
 
+        # --- Hook: before_tui_janitor ---
+        pm = get_manager()
+        pm.dispatch_before_tui_janitor()
+
         try:
             from .janitor import run_janitor
 
@@ -355,6 +404,9 @@ class BrainApp(App):
             # Refresh preview if a file is selected
             if self._selected_file:
                 self.app.call_from_thread(self._show_preview, self._selected_file)
+
+            # --- Hook: after_tui_janitor ---
+            pm.dispatch_after_tui_janitor(summaries)
 
         except Exception as e:
             self.app.call_from_thread(

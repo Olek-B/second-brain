@@ -14,6 +14,7 @@ from groq import Groq
 
 from . import config
 from .librarian import _repair_json
+from .plugins import get_manager
 
 
 JANITOR_PROMPT = """\
@@ -44,10 +45,14 @@ If a file needs no changes, do NOT include it.
 
 CRITICAL RULES:
 - Do NOT rewrite, summarize, expand, or reorganize content.
-- Do NOT change the meaning of any text.
+- Do NOT add advice, explanations, introductions, or conclusions.
+- Do NOT change the meaning or wording of any text.
 - Do NOT merge or split files.
 - Do NOT rename files.
 - Do NOT remove any content.
+- Do NOT add content that wasn't there before (except wikilink brackets).
+- The output file should be nearly identical to the input — only formatting \
+fixes and [[wikilink]] brackets added around existing words.
 - ONLY fix formatting and add missing wikilinks.
 - Return ONLY valid JSON.\
 """
@@ -87,6 +92,7 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     Returns:
         List of summary strings describing changes made.
     """
+    pm = get_manager()
     brain_dir = config.BRAIN_DIR
     file_list = config.get_brain_files()
 
@@ -98,6 +104,9 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     for fname in file_list:
         fpath = brain_dir / fname
         files[fname] = fpath.read_text()
+
+    # --- Hook: before_janitor_run ---
+    pm.dispatch_before_janitor_run(files)
 
     # Build the prompt and estimate cost
     user_input = _build_janitor_input(files, file_list)
@@ -142,8 +151,14 @@ def run_janitor(dry_run: bool = False) -> list[str]:
             return [f"Could not parse janitor response: {e}"]
 
     changes = result.get("changes", [])
+
+    # --- Hook: after_janitor_llm (mutating) ---
+    changes = pm.dispatch_after_janitor_llm(changes)
+
     if not changes:
         summaries.append("Everything clean -- no changes needed.")
+        # --- Hook: after_janitor_run ---
+        pm.dispatch_after_janitor_run(summaries)
         return summaries
 
     for change in changes:
@@ -157,6 +172,8 @@ def run_janitor(dry_run: bool = False) -> list[str]:
         fpath = brain_dir / fname
         if not fpath.exists():
             summaries.append(f"SKIP {fname} (doesn't exist)")
+            # --- Hook: on_janitor_skip ---
+            pm.dispatch_on_janitor_skip(fname, "doesn't exist")
             continue
 
         old_content = fpath.read_text()
@@ -176,10 +193,24 @@ def run_janitor(dry_run: bool = False) -> list[str]:
         old_len = len(old_content)
         new_len = len(new_content)
         if new_len < old_len * 0.8:
-            summaries.append(
-                f"REJECT {fname} (content shrunk by "
-                f"{100 - int(new_len / old_len * 100)}% -- too aggressive)"
+            reason = (
+                f"content shrunk by "
+                f"{100 - int(new_len / old_len * 100)}% -- too aggressive"
             )
+            summaries.append(f"REJECT {fname} ({reason})")
+            # --- Hook: on_janitor_reject ---
+            pm.dispatch_on_janitor_reject(fname, reason)
+            continue
+
+        # Safety: reject if content grew too much (janitor shouldn't expand)
+        if old_len > 0 and new_len > old_len * 1.3:
+            reason = (
+                f"content grew by "
+                f"{int(new_len / old_len * 100) - 100}% -- janitor should "
+                f"not add content"
+            )
+            summaries.append(f"REJECT {fname} ({reason})")
+            pm.dispatch_on_janitor_reject(fname, reason)
             continue
 
         if dry_run:
@@ -192,6 +223,11 @@ def run_janitor(dry_run: bool = False) -> list[str]:
                 f"+{link_count} links)"
             )
         else:
+            # --- Hook: before_janitor_write (mutating) ---
+            new_content = pm.dispatch_before_janitor_write(
+                fname, old_content, new_content,
+            )
+
             fpath.write_text(new_content)
             link_count = len(re.findall(r"\[\[", new_content)) - len(
                 re.findall(r"\[\[", old_content)
@@ -202,6 +238,9 @@ def run_janitor(dry_run: bool = False) -> list[str]:
                 f"+{link_count} links)"
             )
 
+            # --- Hook: after_janitor_write ---
+            pm.dispatch_after_janitor_write(fname)
+
     if len(summaries) == 1:
         summaries.append("Everything clean -- no changes needed.")
 
@@ -210,5 +249,8 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     with open(log_path, "a") as f:
         f.write(f"\n[{timestamp}] {' | '.join(summaries)}\n")
+
+    # --- Hook: after_janitor_run ---
+    pm.dispatch_after_janitor_run(summaries)
 
     return summaries

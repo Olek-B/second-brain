@@ -671,3 +671,39 @@ def get_brain_files() -> list[str]:
         BRAIN_DIR.mkdir(parents=True, exist_ok=True)
         return []
     return sorted(f.name for f in BRAIN_DIR.glob("*.md") if f.name != "dump.md")
+
+
+# ---------------------------------------------------------------------------
+# Plugin config
+# ---------------------------------------------------------------------------
+
+def get_plugin_dir() -> Path:
+    """Return the plugin directory path."""
+    configured = _get("plugins.dir")
+    if configured and isinstance(configured, str):
+        return Path(configured)
+    return CONFIG_DIR / "plugins"
+
+
+def get_enabled_plugins() -> list[str] | None:
+    """Return list of enabled plugin names, or None if all are enabled."""
+    enabled = _get("plugins.enabled")
+    if enabled and isinstance(enabled, list):
+        return [str(e) for e in enabled]
+    return None
+
+
+def get_disabled_plugins() -> list[str]:
+    """Return list of explicitly disabled plugin names."""
+    disabled = _get("plugins.disabled")
+    if disabled and isinstance(disabled, list):
+        return [str(d) for d in disabled]
+    return []
+
+
+def get_plugin_config(plugin_name: str) -> dict:
+    """Return per-plugin config from config.json plugins.config section."""
+    cfg = _get(f"plugins.config.{plugin_name}")
+    if cfg and isinstance(cfg, dict):
+        return cfg
+    return {}

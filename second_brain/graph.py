@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from . import config
+from .plugins import get_manager
 
 
 def scan_brain() -> tuple[list[str], list[tuple[str, str]]]:
@@ -15,6 +16,11 @@ def scan_brain() -> tuple[list[str], list[tuple[str, str]]]:
         (nodes, edges) where nodes are filenames (without .md) and
         edges are (source, target) tuples based on [[wikilinks]].
     """
+    pm = get_manager()
+
+    # --- Hook: before_scan_brain ---
+    pm.dispatch_before_scan_brain()
+
     brain_dir = config.BRAIN_DIR
     nodes: list[str] = []
     edges: list[tuple[str, str]] = []
@@ -40,6 +46,10 @@ def scan_brain() -> tuple[list[str], list[tuple[str, str]]]:
 
     # Deduplicate edges
     edges = list(set(edges))
+
+    # --- Hook: after_scan_brain (mutating) ---
+    nodes, edges = pm.dispatch_after_scan_brain(nodes, edges)
+
     return nodes, edges
 
 
@@ -85,6 +95,11 @@ def generate_dot(nodes: list[str], edges: list[tuple[str, str]]) -> str:
     The graph is sized to fit the RIGHT 60% of the screen,
     leaving the left 40% free for the todo overlay.
     """
+    pm = get_manager()
+
+    # --- Hook: before_generate_dot ---
+    pm.dispatch_before_generate_dot(nodes, edges)
+
     colors = _pick_colors()
     width, height = config.get_monitor_resolution()
     _, gv_font = config.get_font()
@@ -134,23 +149,44 @@ def generate_dot(nodes: list[str], edges: list[tuple[str, str]]) -> str:
         label = node.replace("_", " ")
         if len(label) > 14:
             label = label[:12] + ".."
-        dot_lines.append(
-            f'  "{node}" ['
-            f'label="{label}" '
-            f'fillcolor="{nc}40" '
-            f'color="{glow}" '
-            f'fontcolor="{colors["fg"]}" '
-            f']'
-        )
+
+        # Base node attributes
+        node_attrs = {
+            "label": label,
+            "fillcolor": f"{nc}40",
+            "color": glow,
+            "fontcolor": colors["fg"],
+        }
+
+        # --- Hook: on_dot_node (mutating) ---
+        node_attrs = pm.dispatch_on_dot_node(node, node_attrs)
+
+        attr_str = " ".join(f'{k}="{v}"' for k, v in node_attrs.items())
+        dot_lines.append(f'  "{node}" [{attr_str}]')
 
     dot_lines.append("")
 
     # Add edges
     for src, tgt in edges:
-        dot_lines.append(f'  "{src}" -> "{tgt}"')
+        # Base edge attributes (empty — uses global defaults)
+        edge_attrs: dict[str, str] = {}
+
+        # --- Hook: on_dot_edge (mutating) ---
+        edge_attrs = pm.dispatch_on_dot_edge(src, tgt, edge_attrs)
+
+        if edge_attrs:
+            attr_str = " ".join(f'{k}="{v}"' for k, v in edge_attrs.items())
+            dot_lines.append(f'  "{src}" -> "{tgt}" [{attr_str}]')
+        else:
+            dot_lines.append(f'  "{src}" -> "{tgt}"')
 
     dot_lines.append("}")
-    return "\n".join(dot_lines)
+    dot_source = "\n".join(dot_lines)
+
+    # --- Hook: after_generate_dot (mutating) ---
+    dot_source = pm.dispatch_after_generate_dot(dot_source)
+
+    return dot_source
 
 
 def render_graph(output_path: Path | None = None) -> Path:
@@ -158,6 +194,8 @@ def render_graph(output_path: Path | None = None) -> Path:
 
     Returns the path to the rendered PNG.
     """
+    pm = get_manager()
+
     if output_path is None:
         output_path = config.GRAPH_OUTPUT
 
@@ -169,6 +207,9 @@ def render_graph(output_path: Path | None = None) -> Path:
         edges = []
 
     dot_source = generate_dot(nodes, edges)
+
+    # --- Hook: before_render_graph (mutating) ---
+    dot_source = pm.dispatch_before_render_graph(dot_source)
 
     # Write DOT to temp file and render
     dot_file = Path(tempfile.mktemp(suffix=".dot"))
@@ -205,5 +246,8 @@ def render_graph(output_path: Path | None = None) -> Path:
         )
     finally:
         dot_file.unlink(missing_ok=True)
+
+    # --- Hook: after_render_graph ---
+    pm.dispatch_after_render_graph(output_path)
 
     return output_path
