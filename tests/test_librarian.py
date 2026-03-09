@@ -3,10 +3,11 @@
 import json
 
 import pytest
-
+from second_brain import config
 from second_brain.librarian import (
     _repair_json,
     _validate_actions,
+    execute_actions,
     parse_llm_response,
 )
 
@@ -62,7 +63,7 @@ class TestRepairJson:
 
     def test_complex_broken_json(self):
         """Simulate typical LLM broken output."""
-        text = '''```json
+        text = """```json
 {
   "actions": [
     {"type": "todo", "content": "Fix the DNS config"},
@@ -73,7 +74,7 @@ troubleshooting",
      "wikilinks": ["dns"]},
   ]
 }
-```'''
+```"""
         result = _repair_json(text)
         parsed = json.loads(result)
         assert len(parsed["actions"]) == 2
@@ -83,49 +84,59 @@ class TestValidateActions:
     """Action validation and normalization."""
 
     def test_valid_actions_pass_through(self):
-        result = _validate_actions({
-            "actions": [
-                {"type": "todo", "content": "Test task"},
-                {"type": "create", "target": "notes.md", "description": "test"},
-            ]
-        })
+        result = _validate_actions(
+            {
+                "actions": [
+                    {"type": "todo", "content": "Test task"},
+                    {"type": "create", "target": "notes.md", "description": "test"},
+                ]
+            }
+        )
         assert len(result["actions"]) == 2
 
     def test_todo_gets_target_set(self):
-        result = _validate_actions({
-            "actions": [{"type": "todo", "content": "Test"}]
-        })
+        result = _validate_actions({"actions": [{"type": "todo", "content": "Test"}]})
         assert result["actions"][0]["target"] == "todo.md"
 
     def test_missing_md_extension_added(self):
-        result = _validate_actions({
-            "actions": [{"type": "append", "target": "notes"}]
-        })
+        result = _validate_actions({"actions": [{"type": "append", "target": "notes"}]})
         assert result["actions"][0]["target"] == "notes.md"
 
     def test_create_normalized_to_snake_case(self):
-        result = _validate_actions({
-            "actions": [{"type": "create", "target": "My Cool Notes.md", "description": "test"}]
-        })
+        result = _validate_actions(
+            {"actions": [{"type": "create", "target": "My Cool Notes.md", "description": "test"}]}
+        )
         target = result["actions"][0]["target"]
         assert " " not in target
         assert target.endswith(".md")
         assert target == target.lower()
 
     def test_create_cleans_special_chars(self):
-        result = _validate_actions({
-            "actions": [{"type": "create", "target": "DNS (config)!.md", "description": "test"}]
-        })
+        result = _validate_actions(
+            {"actions": [{"type": "create", "target": "DNS (config)!.md", "description": "test"}]}
+        )
         target = result["actions"][0]["target"]
         # Should only contain [a-z0-9_.]
         import re
+
         assert re.match(r"^[a-z0-9_.]+$", target)
 
     def test_invalid_action_type_raises(self):
         with pytest.raises(ValueError, match="Invalid action type"):
-            _validate_actions({
-                "actions": [{"type": "delete", "target": "notes.md"}]
-            })
+            _validate_actions({"actions": [{"type": "merge", "target": "notes.md"}]})
+
+    def test_delete_action_validated(self):
+        result = _validate_actions(
+            {"actions": [{"type": "delete", "target": "notes", "lines": ["some line"]}]}
+        )
+        action = result["actions"][0]
+        assert action["type"] == "delete"
+        assert action["target"] == "notes.md"
+        assert action["lines"] == ["some line"]
+
+    def test_delete_action_defaults_empty_lines(self):
+        result = _validate_actions({"actions": [{"type": "delete", "target": "notes.md"}]})
+        assert result["actions"][0]["lines"] == []
 
     def test_missing_actions_key_raises(self):
         with pytest.raises(ValueError, match="missing 'actions'"):
@@ -160,17 +171,194 @@ class TestParseLlmResponse:
         assert result["actions"] == []
 
     def test_parse_multiple_action_types(self):
-        text = json.dumps({
-            "actions": [
-                {"type": "todo", "content": "Buy milk"},
-                {"type": "create", "target": "shopping.md",
-                 "description": "Shopping list", "excerpt": "buy milk"},
-                {"type": "append", "target": "notes.md",
-                 "description": "Add item", "excerpt": "note text"},
-            ]
-        })
+        text = json.dumps(
+            {
+                "actions": [
+                    {"type": "todo", "content": "Buy milk"},
+                    {
+                        "type": "create",
+                        "target": "shopping.md",
+                        "description": "Shopping list",
+                        "excerpt": "buy milk",
+                    },
+                    {
+                        "type": "append",
+                        "target": "notes.md",
+                        "description": "Add item",
+                        "excerpt": "note text",
+                    },
+                ]
+            }
+        )
         result = parse_llm_response(text)
         types = [a["type"] for a in result["actions"]]
         assert "todo" in types
         assert "create" in types
         assert "append" in types
+
+    def test_parse_actions_with_tags(self):
+        text = json.dumps(
+            {
+                "actions": [
+                    {
+                        "type": "create",
+                        "target": "dns.md",
+                        "description": "DNS notes",
+                        "excerpt": "dns config",
+                        "tags": ["dns", "networking", "homelab"],
+                    },
+                    {
+                        "type": "append",
+                        "target": "notes.md",
+                        "description": "Add item",
+                        "excerpt": "note text",
+                        "tags": ["productivity"],
+                    },
+                ]
+            }
+        )
+        result = parse_llm_response(text)
+        assert result["actions"][0]["tags"] == ["dns", "networking", "homelab"]
+        assert result["actions"][1]["tags"] == ["productivity"]
+
+    def test_parse_actions_missing_tags_gets_empty_list(self):
+        text = json.dumps(
+            {
+                "actions": [
+                    {
+                        "type": "create",
+                        "target": "notes.md",
+                        "description": "No tags provided",
+                        "excerpt": "text",
+                    },
+                ]
+            }
+        )
+        result = parse_llm_response(text)
+        assert result["actions"][0]["tags"] == []
+
+    def test_validate_actions_tags_string_repair(self):
+        """Test that string tags are converted to lists."""
+        result = _validate_actions(
+            {
+                "actions": [
+                    {
+                        "type": "create",
+                        "target": "notes.md",
+                        "description": "test",
+                        "tags": "dns, networking, homelab",
+                    },
+                ]
+            }
+        )
+        assert result["actions"][0]["tags"] == ["dns", "networking", "homelab"]
+
+    def test_validate_actions_tags_invalid_type(self):
+        """Test that invalid tag types are replaced with empty list."""
+        result = _validate_actions(
+            {
+                "actions": [
+                    {"type": "create", "target": "notes.md", "description": "test", "tags": 123},
+                ]
+            }
+        )
+        assert result["actions"][0]["tags"] == []
+
+
+class TestExecuteActionsWithTags:
+    """Integration tests for tag application during action execution."""
+
+    def test_create_action_applies_tags(self, tmp_path):
+        """Test that create actions apply tags to new files."""
+
+        old_dir = config.BRAIN_DIR
+        try:
+            config.BRAIN_DIR = tmp_path
+            actions = {
+                "actions": [
+                    {
+                        "type": "create",
+                        "target": "dns-config.md",
+                        "description": "DNS setup notes",
+                        "excerpt": "configured DNS",
+                        "content": "# DNS Config\n\nMy DNS setup notes.",
+                        "tags": ["dns", "networking", "homelab"],
+                    }
+                ]
+            }
+            summaries = execute_actions(actions)
+
+            # Check file was created
+            assert (tmp_path / "dns-config.md").exists()
+            content = (tmp_path / "dns-config.md").read_text()
+
+            # Check tags were applied
+            assert "#dns" in content
+            assert "#networking" in content
+            assert "#homelab" in content
+
+            # Check summary mentions tags
+            assert any("tags:" in s for s in summaries)
+        finally:
+            config.BRAIN_DIR = old_dir
+
+    def test_append_action_applies_tags(self, tmp_path):
+        """Test that append actions apply tags to existing files."""
+
+        old_dir = config.BRAIN_DIR
+        try:
+            config.BRAIN_DIR = tmp_path
+            # Create existing file
+            (tmp_path / "notes.md").write_text("# My Notes\n\nSome content.")
+
+            actions = {
+                "actions": [
+                    {
+                        "type": "append",
+                        "target": "notes.md",
+                        "description": "Add productivity tip",
+                        "excerpt": "productivity hack",
+                        "content": "## Productivity Tip\n\nUse time blocking.",
+                        "tags": ["productivity", "time-management"],
+                    }
+                ]
+            }
+            execute_actions(actions)
+
+            # Check file was updated
+            content = (tmp_path / "notes.md").read_text()
+
+            # Check tags were applied
+            assert "#productivity" in content
+            assert "#time-management" in content
+        finally:
+            config.BRAIN_DIR = old_dir
+
+    def test_action_without_tags(self, tmp_path):
+        """Test that actions without tags work normally."""
+
+        old_dir = config.BRAIN_DIR
+        try:
+            config.BRAIN_DIR = tmp_path
+            actions = {
+                "actions": [
+                    {
+                        "type": "create",
+                        "target": "random.md",
+                        "description": "Random note",
+                        "excerpt": "random thought",
+                        "content": "# Random\n\nJust a random thought.",
+                        "tags": [],  # No tags
+                    }
+                ]
+            }
+            execute_actions(actions)
+
+            # Check file was created
+            assert (tmp_path / "random.md").exists()
+            content = (tmp_path / "random.md").read_text()
+
+            # Check no tags were added
+            assert "#random" not in content
+        finally:
+            config.BRAIN_DIR = old_dir

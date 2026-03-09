@@ -1,119 +1,92 @@
 """The Librarian - AI-driven markdown organizer using Groq API.
 
-Two-pass architecture:
-  Pass 1 (Plan):  Reads dump + file list -> decides WHERE content goes
-                  (create/append/todo), returns lightweight plan with no
-                  heavy content, just descriptions and todo one-liners.
-  Pass 2 (Write): For each create/append action, sends the plan entry +
-                  target file content as context -> returns polished
-                  markdown that fits naturally into the file.
+Three-pass architecture:
+  Pass 1 (Plan):   Reads dump + file list -> decides WHERE content goes
+                   (create/append/todo), returns lightweight plan with no
+                   heavy content, just descriptions and todo one-liners.
+  Pass 2 (Write):  For each create/append action, sends the plan entry +
+                   target file content as context -> returns cleaned-up
+                   markdown that fits naturally into the file.
+  Pass 3 (Review): Compares the writer's output against the raw excerpt,
+                   strips anything the writer added that wasn't in the
+                   original (invented info, advice, filler).
 """
 
 import json
 import re
 from datetime import datetime
-from pathlib import Path
 
 from groq import Groq
 
 from . import config
 from .plugins import get_manager
+from .prompts import (
+    PLAN_SYSTEM_PROMPT,
+    REVIEW_SYSTEM_PROMPT,
+    WRITE_SYSTEM_PROMPT,
+)
+
+# Marker appended to lines the AI marks for soft-deletion.
+# The TUI renderer hides these lines but they remain in the file on disk.
+DELETE_MARKER = "<!-- DELETE -->"
 
 
-# ---------------------------------------------------------------------------
-# Pass 1: Planning
-# ---------------------------------------------------------------------------
+def _build_review_user_prompt(excerpt: str, writer_output: str) -> str:
+    """Build the user prompt for the review pass."""
+    return f"""\
+## Original Raw Excerpt:
+{excerpt}
 
-PLAN_SYSTEM_PROMPT = """\
-You are a "Second Brain" librarian. Your job is to READ a dump of raw \
-thoughts and PLAN how to organize them into a structured Markdown knowledge \
-base. You do NOT write the final content in this step -- only the plan.
+## Writer's Output:
+{writer_output}
 
-RULES:
-1. You receive:
-   - A dump of raw thoughts (the user's input).
-   - A list of EXISTING .md files in the knowledge base.
-
-2. For each distinct thought/topic in the dump, decide:
-
-   a) TODO DETECTION: If a thought contains a task or action item \
-(keywords like "todo", "need to", "should", "must", "have to", "want to", \
-"look into", "figure out", "fix", "implement", "build", "set up", "learn", \
-"explore", "check", "try", "remember to", "don't forget"), emit a "todo" \
-action. The content field MUST be the final one-liner task text (short, \
-punchy, no markdown). Todos are resolved fully in this pass.
-
-   b) SEMANTIC MATCH: If a thought relates to an existing file, emit an \
-"append" action with a brief description of what to add and WHERE in the \
-file it should go (e.g., "after the TLS section", "at the end"). Do NOT \
-write the actual markdown content -- just describe the intent.
-
-   c) NEW TOPIC: If no existing file matches, emit a "create" action with \
-a clean snake_case.md filename and a brief description of the content.
-
-   NOTE: A single thought can produce BOTH a todo AND an append/create.
-
-3. For append/create actions, include an "excerpt" field containing the \
-EXACT relevant text from the dump that this action is based on. This will \
-be used in the next step to generate the actual content.
-
-4. Include a "wikilinks" field listing filenames (without .md) from the \
-existing files list that should be linked to via [[wikilinks]] in the \
-final content.
-
-5. OUTPUT FORMAT: Valid JSON only.
-   {"actions": [
-     {"type": "todo", "content": "Short task summary"},
-     {"type": "append", "target": "existing_file.md", \
-"description": "Add notes about X after the Y section", \
-"excerpt": "raw text from dump...", \
-"wikilinks": ["other_file", "another_file"]},
-     {"type": "create", "target": "new_topic.md", \
-"description": "New page about X covering Y and Z", \
-"excerpt": "raw text from dump...", \
-"wikilinks": ["related_file"]}
-   ]}
-
-CRITICAL: Return ONLY valid JSON. No markdown fences, no explanation.\
+Compare these two. If the writer added anything not in the original, \
+return a corrected version. If it's fine, return the writer's output as-is.\
 """
 
 
-# ---------------------------------------------------------------------------
-# Pass 2: Writing
-# ---------------------------------------------------------------------------
+# Maximum allowed growth ratio: writer output vs raw excerpt.
+# If the writer produces more than 2.5x the excerpt length, fall back
+# to a minimal version with just wikilinks injected.  Slightly generous
+# to allow grammar fixes that may expand terse/garbled text.
+_MAX_GROWTH_RATIO = 2.5
 
-WRITE_SYSTEM_PROMPT = """\
-You are a "Second Brain" content writer. You receive a PLAN describing what \
-to write, the RAW EXCERPT from the user's dump, and (for appends) the \
-EXISTING FILE content so you can match its style and structure.
 
-RULES:
-1. Write clean Markdown. Keep it SHORT — these are personal notes, not articles.
-2. INSERT [[wikilinks]] to the files listed in the plan. Use the filename \
-without .md inside the brackets, e.g., [[networking]].
-3. For APPEND actions:
-   - Start with a timestamped header: "## Update - YYYY-MM-DD HH:MM"
-   - Write content that flows naturally with the existing file.
-   - Match the existing file's style, heading levels, and tone.
-   - Do NOT repeat information already in the file.
-4. For CREATE actions:
-   - Start with a "# Title" header (human-readable, not snake_case).
-5. KEEP THE USER'S ORIGINAL WORDS. Restructure and format them into clean \
-markdown, but do NOT rewrite, paraphrase, expand, or add advice. \
-Do NOT add content that wasn't in the excerpt. Do NOT turn a short note \
-into an essay. A 2-line thought stays roughly 2 lines.
-6. Use bullet points where the user listed things. Use short sentences.
-7. No filler phrases like "it's worth noting", "this can be particularly \
-useful", "consider exploring", etc. No generic advice or conclusions.
+def _fallback_minimal(action: dict, timestamp: str) -> str:
+    """Build a bare-minimum note from the raw excerpt + wikilinks.
 
-OUTPUT FORMAT: Return ONLY the raw Markdown content to write. \
-No JSON wrapping, no code fences, just the markdown text.\
-"""
+    Used when the writer's output is rejected by the safety check.
+    """
+    excerpt = action.get("excerpt", "").strip()
+    wikilinks = action.get("wikilinks", [])
+    parts = []
+
+    if action["type"] == "create":
+        title = action["target"].replace(".md", "").replace("_", " ").title()
+        parts.append(f"# {title}\n")
+    else:
+        desc = action.get("description", "Update")
+        parts.append(f"## {desc}\n")
+        parts.append(f"*{timestamp}*\n")
+
+    # Inject wikilinks into the excerpt text where possible
+    text = excerpt
+    for wl in wikilinks:
+        # Simple case-insensitive replacement of the first mention
+        pattern = re.compile(re.escape(wl), re.IGNORECASE)
+        text = pattern.sub(f"[[{wl}]]", text, count=1)
+
+    parts.append(text)
+    return "\n".join(parts)
 
 
 def _build_plan_user_prompt(dump_text: str, existing_files: list[str]) -> str:
     """Build the user prompt for the planning pass."""
-    files_list = "\n".join(f"  - {f}" for f in existing_files) if existing_files else "  (none - knowledge base is empty)"
+    files_list = (
+        "\n".join(f"  - {f}" for f in existing_files)
+        if existing_files
+        else "  (none - knowledge base is empty)"
+    )
 
     return f"""\
 ## Existing Files in Knowledge Base:
@@ -162,6 +135,7 @@ def _build_write_user_prompt(
 # JSON repair + parsing (unchanged)
 # ---------------------------------------------------------------------------
 
+
 def _repair_json(text: str) -> str:
     """Attempt to repair broken JSON from LLM output.
 
@@ -182,7 +156,7 @@ def _repair_json(text: str) -> str:
     first_brace = text.find("{")
     last_brace = text.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        text = text[first_brace:last_brace + 1]
+        text = text[first_brace : last_brace + 1]
 
     # Fix unescaped newlines inside JSON string values.
     # Walk through the string tracking whether we're inside a JSON string.
@@ -199,12 +173,12 @@ def _repair_json(text: str) -> str:
             i += 2
             continue
 
-        if ch == '"' :
+        if ch == '"':
             # Check this isn't an incorrectly unescaped quote inside a string.
             if in_string:
                 # Peek ahead: if the next non-whitespace char is a structural
                 # JSON char (:, ,, }, ]) then this closes the string.
-                rest = text[i + 1:].lstrip()
+                rest = text[i + 1 :].lstrip()
                 if rest and rest[0] in ":,}]":
                     in_string = False
                     result.append(ch)
@@ -300,10 +274,17 @@ def _validate_actions(result: dict) -> dict:
         raise ValueError(f"LLM response missing 'actions' key: {list(result.keys())}")
 
     for action in result["actions"]:
-        if action.get("type") not in ("append", "create", "todo"):
+        if action.get("type") not in ("append", "create", "todo", "delete"):
             raise ValueError(f"Invalid action type: {action.get('type')}")
         if action["type"] == "todo":
             action["target"] = "todo.md"
+            continue
+        if action["type"] == "delete":
+            # delete actions need a target file and a lines list
+            if not action.get("target", "").endswith(".md"):
+                action["target"] = action["target"] + ".md"
+            if "lines" not in action:
+                action["lines"] = []
             continue
         if not action.get("target", "").endswith(".md"):
             action["target"] = action["target"] + ".md"
@@ -315,6 +296,15 @@ def _validate_actions(result: dict) -> dict:
             if not name.endswith(".md"):
                 name += ".md"
             action["target"] = name
+        # Ensure tags field exists and is valid
+        if "tags" not in action:
+            action["tags"] = []
+        elif not isinstance(action["tags"], list):
+            # Try to repair if it's a string
+            if isinstance(action["tags"], str):
+                action["tags"] = [t.strip() for t in action["tags"].split(",") if t.strip()]
+            else:
+                action["tags"] = []
 
     return result
 
@@ -323,11 +313,13 @@ def _validate_actions(result: dict) -> dict:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
+
 def process_dump(dump_text: str | None = None) -> dict:
-    """Process the dump file through 2 LLM passes and return actions with content.
+    """Process the dump file through 3 LLM passes and return actions with content.
 
     Pass 1: Plan — decide where each thought goes.
-    Pass 2: Write — generate polished content for each create/append action.
+    Pass 2: Write — generate cleaned-up content for each create/append action.
+    Pass 3: Review — compare against raw excerpt, strip any added content.
 
     Args:
         dump_text: Optional raw text. If None, reads from dump.md.
@@ -400,9 +392,14 @@ def process_dump(dump_text: str | None = None) -> dict:
             model=config.GROQ_MODEL,
             messages=[
                 {"role": "system", "content": WRITE_SYSTEM_PROMPT},
-                {"role": "user", "content": _build_write_user_prompt(
-                    action, existing_content, timestamp,
-                )},
+                {
+                    "role": "user",
+                    "content": _build_write_user_prompt(
+                        action,
+                        existing_content,
+                        timestamp,
+                    ),
+                },
             ],
             temperature=0.3,
             max_tokens=4096,
@@ -415,6 +412,47 @@ def process_dump(dump_text: str | None = None) -> dict:
             content = re.sub(r"^```(?:markdown|md)?\s*\n?", "", content)
             content = re.sub(r"\n?```\s*$", "", content)
             content = content.strip()
+
+        # ------ Pass 3: Review — catch writer overreach ------
+        excerpt = action.get("excerpt", "").strip()
+        excerpt_len = len(excerpt)
+
+        # Safety check: if writer output is way too long, skip review
+        # and fall back to a minimal version.
+        if excerpt_len > 0 and len(content) > excerpt_len * _MAX_GROWTH_RATIO:
+            content = _fallback_minimal(action, timestamp)
+        elif excerpt_len > 0 and content:
+            # Run the review pass
+            try:
+                review_response = client.chat.completions.create(
+                    model=config.GROQ_MODEL,
+                    messages=[
+                        {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": _build_review_user_prompt(
+                                excerpt,
+                                content,
+                            ),
+                        },
+                    ],
+                    temperature=0.1,
+                    max_tokens=4096,
+                )
+
+                reviewed: str = review_response.choices[0].message.content or ""
+                reviewed = reviewed.strip()
+                if reviewed.startswith("```"):
+                    reviewed = re.sub(r"^```(?:markdown|md)?\s*\n?", "", reviewed)
+                    reviewed = re.sub(r"\n?```\s*$", "", reviewed)
+                    reviewed = reviewed.strip()
+
+                if reviewed:
+                    content = reviewed
+            except Exception:
+                # Review pass failed — keep the writer's output as-is.
+                # Better to have slightly over-cleaned notes than nothing.
+                pass
 
         action["content"] = content
 
@@ -455,6 +493,34 @@ def execute_actions(actions: dict) -> list[str]:
                 todo_items.append(line)
             continue
 
+        if action["type"] == "delete":
+            # Soft-delete: append <!-- DELETE --> marker to matching lines
+            target = brain_dir / action["target"]
+            if not target.exists():
+                summaries.append(f"SKIP (not found) -> {action['target']}")
+                continue
+            lines_to_delete: list[str] = action.get("lines", [])
+            if not lines_to_delete:
+                summaries.append(f"SKIP (no lines) -> {action['target']}")
+                continue
+            file_text = target.read_text()
+            file_lines = file_text.splitlines()
+            marked = 0
+            for i, file_line in enumerate(file_lines):
+                stripped = file_line.strip()
+                # Skip lines already marked
+                if stripped.endswith(DELETE_MARKER):
+                    continue
+                for del_line in lines_to_delete:
+                    if stripped == del_line.strip():
+                        file_lines[i] = file_line + "  " + DELETE_MARKER
+                        marked += 1
+                        break
+            if marked:
+                target.write_text("\n".join(file_lines) + "\n")
+            summaries.append(f"DELETE -> {action['target']} ({marked} line(s) marked)")
+            continue
+
         target = brain_dir / action["target"]
         content = action.get("content", "")
 
@@ -488,8 +554,30 @@ def execute_actions(actions: dict) -> list[str]:
 
         summaries.append(summary)
 
+        # Apply tags from the action to the file
+        tags = action.get("tags", [])
+        if tags and target.exists():
+            from . import tags as tags_module
+
+            for tag in tags:
+                tags_module.add_tag_to_file(action["target"], tag, location="end")
+            if tags:
+                summary = f"{summary} (tags: {', '.join(tags)})"
+                # Update the last summary with tag info
+                summaries[-1] = summary
+
         # --- Hook: after_write_file ---
         pm.dispatch_after_write_file(action, target, summary)
+
+    # Deduplicate todo items (case-insensitive) among themselves
+    seen: set[str] = set()
+    unique_todos: list[str] = []
+    for item in todo_items:
+        key = item.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            unique_todos.append(item)
+    todo_items = unique_todos
 
     # Write todos to todo.md
     if todo_items:
@@ -505,15 +593,26 @@ def execute_actions(actions: dict) -> list[str]:
         else:
             existing = "# Todo\n\nTasks extracted from brain dumps."
 
-        new_lines = [f"\n\n## Added - {timestamp}"]
-        for item in todo_items:
-            new_lines.append(f"- [ ] {item}")
+        # Deduplicate against existing todo.md items (exact match only)
+        existing_items: set[str] = set()
+        for eline in existing.splitlines():
+            m = re.match(r"^- \[.\]\s*(.*)", eline)
+            if m:
+                existing_items.add(m.group(1).strip().lower())
+        todo_items = [item for item in todo_items if item.strip().lower() not in existing_items]
 
-        todo_path.write_text(existing + "\n".join(new_lines) + "\n")
-        summaries.append(f"TODO -> {len(todo_items)} task(s)")
+        if not todo_items:
+            summaries.append("TODO -> 0 task(s) (all duplicates)")
+        else:
+            new_lines = [f"\n\n## Added - {timestamp}"]
+            for item in todo_items:
+                new_lines.append(f"- [ ] {item}")
 
-        # --- Hook: after_write_todos ---
-        pm.dispatch_after_write_todos(len(todo_items))
+            todo_path.write_text(existing + "\n".join(new_lines) + "\n")
+            summaries.append(f"TODO -> {len(todo_items)} task(s)")
+
+            # --- Hook: after_write_todos ---
+            pm.dispatch_after_write_todos(len(todo_items))
 
     # --- Hook: after_execute_actions ---
     pm.dispatch_after_execute_actions(summaries)

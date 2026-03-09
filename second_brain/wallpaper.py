@@ -64,7 +64,7 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
         return None
 
     # --- Hook: before_render_todo_overlay ---
-    pm.dispatch_before_render_todo_overlay(pending)
+    pm.dispatch_before_render_todo_overlay(pending)  # type: ignore[arg-type]
 
     width, height = config.get_monitor_resolution()
     wal = config.get_wal_colors()
@@ -107,20 +107,32 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
 
     magick_args = [
         "magick",
-        "-size", f"{panel_w}x{panel_h}",
+        "-size",
+        f"{panel_w}x{panel_h}",
         "xc:none",
         # Draw the background panel
-        "-fill", f"{bg}B0",
-        "-stroke", f"{accent}60",
-        "-strokewidth", "1",
-        "-draw", draw_cmds[0],
+        "-fill",
+        f"{bg}B0",
+        "-stroke",
+        f"{accent}60",
+        "-strokewidth",
+        "1",
+        "-draw",
+        draw_cmds[0],
         # Title
-        "-font", im_font,
-        "-fill", accent,
-        "-strokewidth", "0",
-        "-pointsize", str(title_size),
-        "-gravity", "NorthWest",
-        "-annotate", f"+{pad_x}+{pad_y}", "  Todo",
+        "-font",
+        im_font,
+        "-fill",
+        accent,
+        "-strokewidth",
+        "0",
+        "-pointsize",
+        str(title_size),
+        "-gravity",
+        "NorthWest",
+        "-annotate",
+        f"+{pad_x}+{pad_y}",
+        "  Todo",
     ]
 
     # Draw each todo item
@@ -132,20 +144,32 @@ def render_todo_overlay(output_path: Path | None = None) -> Path | None:
         bullet = "  "
         line_text = f"{bullet} {text}"
 
-        magick_args.extend([
-            "-fill", fg,
-            "-pointsize", str(item_size),
-            "-annotate", f"+{pad_x}+{y}", line_text,
-        ])
+        magick_args.extend(
+            [
+                "-fill",
+                fg,
+                "-pointsize",
+                str(item_size),
+                "-annotate",
+                f"+{pad_x}+{y}",
+                line_text,
+            ]
+        )
         y += line_height
 
     # Show remaining count if truncated
     if remaining > 0:
-        magick_args.extend([
-            "-fill", f"{fg}88",
-            "-pointsize", str(item_size - 2),
-            "-annotate", f"+{pad_x}+{y + 5}", f"   +{remaining} more...",
-        ])
+        magick_args.extend(
+            [
+                "-fill",
+                f"{fg}88",
+                "-pointsize",
+                str(item_size - 2),
+                "-annotate",
+                f"+{pad_x}+{y + 5}",
+                f"   +{remaining} more...",
+            ]
+        )
 
     magick_args.append(str(output_path))
 
@@ -192,8 +216,7 @@ def composite_wallpaper(
 
     if not graph_path.exists():
         raise FileNotFoundError(
-            f"Graph overlay not found at {graph_path}. "
-            "Run the graph engine first."
+            f"Graph overlay not found at {graph_path}. Run the graph engine first."
         )
 
     # --- Hook: before_composite ---
@@ -209,25 +232,34 @@ def composite_wallpaper(
     magick_args = [
         "magick",
         str(wallpaper_path),
-        "-resize", f"{width}x{height}^",
-        "-gravity", "center",
-        "-extent", f"{width}x{height}",
+        "-resize",
+        f"{width}x{height}^",
+        "-gravity",
+        "center",
+        "-extent",
+        f"{width}x{height}",
     ]
 
     # Layer 1: todo panel on the left
     if todo_path and todo_path.exists():
-        magick_args.extend([
-            str(todo_path),
-            "-gravity", "NorthWest",
-            "-composite",
-        ])
+        magick_args.extend(
+            [
+                str(todo_path),
+                "-gravity",
+                "NorthWest",
+                "-composite",
+            ]
+        )
 
     # Layer 2: graph on the right
-    magick_args.extend([
-        str(graph_path),
-        "-gravity", "East",
-        "-composite",
-    ])
+    magick_args.extend(
+        [
+            str(graph_path),
+            "-gravity",
+            "East",
+            "-composite",
+        ]
+    )
 
     magick_args.append(str(output_path))
 
@@ -268,9 +300,7 @@ def _update_wallpaper_caches(wallpaper_path: Path) -> None:
                 _update_nitrogen_config(cache_path, wallpaper_path)
             elif name == ".fehbg":
                 # feh uses a shell script
-                cache_path.write_text(
-                    f"#!/bin/sh\nfeh --bg-fill '{wallpaper_path}'\n"
-                )
+                cache_path.write_text(f"#!/bin/sh\nfeh --bg-fill '{wallpaper_path}'\n")
             else:
                 # Plain text (e.g., ml4w current_wallpaper)
                 cache_path.write_text(str(wallpaper_path))

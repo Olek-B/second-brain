@@ -1,13 +1,10 @@
 """Tests for second_brain.plugins module."""
 
-import json
-import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from second_brain.plugins import (
     BrainAPI,
     PluginManager,
@@ -17,10 +14,10 @@ from second_brain.plugins import (
     reset_manager,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
@@ -58,6 +55,7 @@ def brain_dir(tmp_path):
 # ---------------------------------------------------------------------------
 # SecondBrainPlugin base class
 # ---------------------------------------------------------------------------
+
 
 class TestSecondBrainPlugin:
     """Base class tests."""
@@ -148,6 +146,7 @@ class TestSecondBrainPlugin:
 # _has_override helper
 # ---------------------------------------------------------------------------
 
+
 class TestHasOverride:
     def test_base_class_has_no_override(self):
         p = SecondBrainPlugin()
@@ -173,6 +172,7 @@ class TestHasOverride:
 # ---------------------------------------------------------------------------
 # BrainAPI
 # ---------------------------------------------------------------------------
+
 
 class TestBrainAPI:
     def test_brain_dir_is_path(self):
@@ -216,6 +216,7 @@ class TestBrainAPI:
     def test_read_file(self, brain_dir):
         api = BrainAPI()
         from second_brain import config
+
         old_dir = config.BRAIN_DIR
         try:
             config.BRAIN_DIR = brain_dir
@@ -227,6 +228,7 @@ class TestBrainAPI:
     def test_read_file_not_found(self, brain_dir):
         api = BrainAPI()
         from second_brain import config
+
         old_dir = config.BRAIN_DIR
         try:
             config.BRAIN_DIR = brain_dir
@@ -238,6 +240,7 @@ class TestBrainAPI:
     def test_write_file(self, brain_dir):
         api = BrainAPI()
         from second_brain import config
+
         old_dir = config.BRAIN_DIR
         try:
             config.BRAIN_DIR = brain_dir
@@ -254,6 +257,7 @@ class TestBrainAPI:
 # ---------------------------------------------------------------------------
 # PluginManager - Loading
 # ---------------------------------------------------------------------------
+
 
 class TestPluginManagerLoading:
     def test_empty_dir(self, manager, plugin_dir):
@@ -351,7 +355,9 @@ class TestPluginManagerLoading:
         )
         with patch("second_brain.config.get_plugin_dir", return_value=plugin_dir):
             with patch("second_brain.config.get_enabled_plugins", return_value=None):
-                with patch("second_brain.config.get_disabled_plugins", return_value=["disabled_plug"]):
+                with patch(
+                    "second_brain.config.get_disabled_plugins", return_value=["disabled_plug"]
+                ):
                     manager.load_all()
         assert manager.plugins == []
 
@@ -439,6 +445,7 @@ class TestPluginManagerLoading:
 # PluginManager - Unloading
 # ---------------------------------------------------------------------------
 
+
 class TestPluginManagerUnloading:
     def test_unload_calls_on_unload(self, manager):
         mock_plugin = MagicMock(spec=SecondBrainPlugin)
@@ -464,6 +471,7 @@ class TestPluginManagerUnloading:
 # ---------------------------------------------------------------------------
 # PluginManager - Mutating dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestMutatingDispatch:
     def test_no_plugins_passes_through(self, manager):
@@ -504,11 +512,13 @@ class TestMutatingDispatch:
     def test_error_mid_chain_continues(self, manager):
         class Explode(SecondBrainPlugin):
             name = "explode"
+
             def before_process_dump(self, text):
                 raise RuntimeError("boom")
 
         class Upper(SecondBrainPlugin):
             name = "upper"
+
             def before_process_dump(self, text):
                 return text.upper()
 
@@ -519,16 +529,16 @@ class TestMutatingDispatch:
     def test_after_plan_mutation(self, manager):
         class FilterTodos(SecondBrainPlugin):
             def after_plan(self, plan):
-                plan["actions"] = [
-                    a for a in plan["actions"] if a["type"] != "todo"
-                ]
+                plan["actions"] = [a for a in plan["actions"] if a["type"] != "todo"]
                 return plan
 
         manager._plugins.append(FilterTodos())
-        plan = {"actions": [
-            {"type": "todo", "content": "task"},
-            {"type": "create", "target": "new.md"},
-        ]}
+        plan = {
+            "actions": [
+                {"type": "todo", "content": "task"},
+                {"type": "create", "target": "new.md"},
+            ]
+        }
         result = manager.dispatch_after_plan(plan)
         assert len(result["actions"]) == 1
         assert result["actions"][0]["type"] == "create"
@@ -548,9 +558,7 @@ class TestMutatingDispatch:
                 return content + "\n---\nGenerated by plugin"
 
         manager._plugins.append(AddFooter())
-        result = manager.dispatch_before_write_file(
-            {}, Path("/tmp/x"), "# Hello"
-        )
+        result = manager.dispatch_before_write_file({}, Path("/tmp/x"), "# Hello")
         assert result == "# Hello\n---\nGenerated by plugin"
 
     def test_before_execute_actions_mutation(self, manager):
@@ -572,6 +580,7 @@ class TestMutatingDispatch:
 # PluginManager - Observational dispatch
 # ---------------------------------------------------------------------------
 
+
 class TestObservationalDispatch:
     def test_no_plugins_no_crash(self, manager):
         manager.dispatch_after_execute_actions(["summary"])
@@ -581,11 +590,13 @@ class TestObservationalDispatch:
 
         class Logger1(SecondBrainPlugin):
             name = "l1"
+
             def after_execute_actions(self, summaries):
                 calls.append(("l1", summaries))
 
         class Logger2(SecondBrainPlugin):
             name = "l2"
+
             def after_execute_actions(self, summaries):
                 calls.append(("l2", summaries))
 
@@ -600,11 +611,13 @@ class TestObservationalDispatch:
 
         class Explode(SecondBrainPlugin):
             name = "explode"
+
             def after_execute_actions(self, summaries):
                 raise RuntimeError("boom")
 
         class Logger(SecondBrainPlugin):
             name = "logger"
+
             def after_execute_actions(self, summaries):
                 calls.append(summaries)
 
@@ -616,6 +629,7 @@ class TestObservationalDispatch:
 # ---------------------------------------------------------------------------
 # PluginManager - Graph dispatchers
 # ---------------------------------------------------------------------------
+
 
 class TestGraphDispatchers:
     def test_after_scan_brain_mutation(self, manager):
@@ -671,6 +685,7 @@ class TestGraphDispatchers:
 # PluginManager - Wallpaper dispatchers
 # ---------------------------------------------------------------------------
 
+
 class TestWallpaperDispatchers:
     def test_after_parse_todos_mutation(self, manager):
         class AddTodo(SecondBrainPlugin):
@@ -678,9 +693,7 @@ class TestWallpaperDispatchers:
                 return items + [(False, "Plugin reminder")]
 
         manager._plugins.append(AddTodo())
-        items = manager.dispatch_after_parse_todos(
-            [(False, "existing")]
-        )
+        items = manager.dispatch_after_parse_todos([(False, "existing")])
         assert len(items) == 2
         assert items[1] == (False, "Plugin reminder")
 
@@ -711,6 +724,7 @@ class TestWallpaperDispatchers:
 # PluginManager - Janitor dispatchers
 # ---------------------------------------------------------------------------
 
+
 class TestJanitorDispatchers:
     def test_after_janitor_llm_filters_changes(self, manager):
         class VetoAll(SecondBrainPlugin):
@@ -728,9 +742,7 @@ class TestJanitorDispatchers:
                 return new + "\n<!-- cleaned -->"
 
         manager._plugins.append(Stamp())
-        result = manager.dispatch_before_janitor_write(
-            "test.md", "old content", "new content"
-        )
+        result = manager.dispatch_before_janitor_write("test.md", "old content", "new content")
         assert result.endswith("<!-- cleaned -->")
 
     def test_on_janitor_reject_observational(self, manager):
@@ -748,6 +760,7 @@ class TestJanitorDispatchers:
 # ---------------------------------------------------------------------------
 # PluginManager - TUI dispatchers
 # ---------------------------------------------------------------------------
+
 
 class TestTuiDispatchers:
     def test_on_file_preview_mutation(self, manager):
@@ -785,6 +798,7 @@ class TestTuiDispatchers:
 # ---------------------------------------------------------------------------
 # Background threads
 # ---------------------------------------------------------------------------
+
 
 class TestBackgroundThreads:
     def test_background_thread_spawned(self, manager, plugin_dir):
@@ -846,6 +860,7 @@ class TestBackgroundThreads:
 # Singleton (get_manager / reset_manager)
 # ---------------------------------------------------------------------------
 
+
 class TestSingleton:
     def test_get_manager_returns_same_instance(self):
         with patch("second_brain.config.get_plugin_dir", return_value=Path("/nonexistent")):
@@ -866,50 +881,54 @@ class TestSingleton:
 # Config integration
 # ---------------------------------------------------------------------------
 
+
 class TestConfigIntegration:
     def test_get_plugin_dir_default(self):
         from second_brain import config
+
         result = config.get_plugin_dir()
         assert result == config.CONFIG_DIR / "plugins"
 
     def test_get_enabled_plugins_none_by_default(self):
         from second_brain import config
+
         with patch.object(config, "_config_cache", {}):
             result = config.get_enabled_plugins()
         assert result is None
 
     def test_get_enabled_plugins_from_config(self):
         from second_brain import config
-        with patch.object(config, "_config_cache", {
-            "plugins": {"enabled": ["alpha", "beta"]}
-        }):
+
+        with patch.object(config, "_config_cache", {"plugins": {"enabled": ["alpha", "beta"]}}):
             result = config.get_enabled_plugins()
         assert result == ["alpha", "beta"]
 
     def test_get_disabled_plugins_empty_by_default(self):
         from second_brain import config
+
         with patch.object(config, "_config_cache", {}):
             result = config.get_disabled_plugins()
         assert result == []
 
     def test_get_disabled_plugins_from_config(self):
         from second_brain import config
-        with patch.object(config, "_config_cache", {
-            "plugins": {"disabled": ["bad_plugin"]}
-        }):
+
+        with patch.object(config, "_config_cache", {"plugins": {"disabled": ["bad_plugin"]}}):
             result = config.get_disabled_plugins()
         assert result == ["bad_plugin"]
 
     def test_get_plugin_config_returns_dict(self):
         from second_brain import config
-        with patch.object(config, "_config_cache", {
-            "plugins": {"config": {"my_plug": {"token": "abc"}}}
-        }):
+
+        with patch.object(
+            config, "_config_cache", {"plugins": {"config": {"my_plug": {"token": "abc"}}}}
+        ):
             result = config.get_plugin_config("my_plug")
         assert result == {"token": "abc"}
 
     def test_get_plugin_config_missing_returns_empty(self):
         from second_brain import config
+
         with patch.object(config, "_config_cache", {}):
             result = config.get_plugin_config("nonexistent")
         assert result == {}
@@ -919,19 +938,24 @@ class TestConfigIntegration:
 # Integration: plugin modifying data through hooks
 # ---------------------------------------------------------------------------
 
+
 class TestIntegration:
     def test_full_mutation_chain(self, manager):
         """Simulate a plugin that adds a watermark to all written files."""
+
         class Watermark(SecondBrainPlugin):
             name = "watermark"
+
             def before_write_file(self, action, target, content):
                 return content + "\n\n<!-- watermark -->"
 
         class Counter(SecondBrainPlugin):
             name = "counter"
+
             def __init__(self, cfg=None):
                 super().__init__(cfg)
                 self.count = 0
+
             def after_write_file(self, action, target, summary):
                 self.count += 1
 
@@ -951,13 +975,16 @@ class TestIntegration:
 
     def test_multiple_mutators_chain_correctly(self, manager):
         """Two mutating plugins should chain their changes."""
+
         class Prefix(SecondBrainPlugin):
             name = "prefix"
+
             def before_process_dump(self, text):
                 return "[PREFIX] " + text
 
         class Suffix(SecondBrainPlugin):
             name = "suffix"
+
             def before_process_dump(self, text):
                 return text + " [SUFFIX]"
 
@@ -967,8 +994,10 @@ class TestIntegration:
 
     def test_plugin_can_veto_actions(self, manager):
         """Plugin can filter out actions via before_execute_actions."""
+
         class NoCreates(SecondBrainPlugin):
             name = "no_creates"
+
             def before_execute_actions(self, actions):
                 return [a for a in actions if a.get("type") != "create"]
 

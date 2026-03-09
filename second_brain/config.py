@@ -18,7 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # XDG-aware base paths
 # ---------------------------------------------------------------------------
@@ -83,6 +82,7 @@ def _get(key: str, default: Any = None) -> Any:
 # Path config (with sensible defaults)
 # ---------------------------------------------------------------------------
 
+
 def _default_brain_dir() -> Path:
     return Path.home() / "Documents" / "brain"
 
@@ -139,6 +139,7 @@ _apply_config()
 # Groq API key
 # ---------------------------------------------------------------------------
 
+
 def get_groq_api_key() -> str:
     """Get Groq API key from environment or config file."""
     key = os.environ.get("GROQ_API_KEY", "")
@@ -148,8 +149,7 @@ def get_groq_api_key() -> str:
             key = key_file.read_text().strip()
     if not key:
         raise RuntimeError(
-            "GROQ_API_KEY not set. Export it or place it in "
-            f"{CONFIG_DIR / 'groq_key'}"
+            f"GROQ_API_KEY not set. Export it or place it in {CONFIG_DIR / 'groq_key'}"
         )
     return key
 
@@ -164,7 +164,15 @@ _WALLPAPER_BACKENDS = [
     {
         "name": "swww",
         "detect": "swww",
-        "set_cmd": ["swww", "img", "{path}", "--transition-type", "fade", "--transition-duration", "1"],
+        "set_cmd": [
+            "swww",
+            "img",
+            "{path}",
+            "--transition-type",
+            "fade",
+            "--transition-duration",
+            "1",
+        ],
         "query": "_query_swww",
     },
     {
@@ -194,7 +202,13 @@ _WALLPAPER_BACKENDS = [
     {
         "name": "gsettings",  # GNOME / Budgie / Cinnamon
         "detect": "gsettings",
-        "set_cmd": ["gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "file://{path}"],
+        "set_cmd": [
+            "gsettings",
+            "set",
+            "org.gnome.desktop.background",
+            "picture-uri-dark",
+            "file://{path}",
+        ],
         "query": "_query_gsettings",
     },
 ]
@@ -204,7 +218,10 @@ def _query_swww() -> Path | None:
     """Query current wallpaper from swww."""
     try:
         result = subprocess.run(
-            ["swww", "query"], capture_output=True, text=True, timeout=5,
+            ["swww", "query"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.splitlines():
             if "image:" in line:
@@ -222,7 +239,9 @@ def _query_hyprpaper() -> Path | None:
     try:
         result = subprocess.run(
             ["hyprctl", "hyprpaper", "listloaded"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.strip().splitlines():
             p = Path(line.strip())
@@ -243,6 +262,7 @@ def _query_feh() -> Path | None:
         return None
     try:
         import re
+
         content = fehbg.read_text()
         # Match quoted or unquoted paths after --bg-fill/--bg-scale/--bg-max/etc.
         m = re.search(r"--bg-\w+\s+['\"]?([^'\"]+\.(png|jpg|jpeg|bmp|webp))", content)
@@ -268,6 +288,7 @@ def _query_nitrogen() -> Path | None:
         return None
     try:
         import configparser
+
         cp = configparser.ConfigParser()
         cp.read(cfg_path)
         # Return the first section's file= value
@@ -287,7 +308,9 @@ def _query_gsettings() -> Path | None:
     try:
         result = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.background", "picture-uri-dark"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         uri = result.stdout.strip().strip("'\"")
         if uri.startswith("file://"):
@@ -312,11 +335,11 @@ def get_wallpaper_backend() -> str | None:
     return None
 
 
-def _get_backend_config(name: str) -> dict | None:
+def _get_backend_config(name: str) -> dict[str, Any] | None:
     """Get backend config dict by name."""
     for b in _WALLPAPER_BACKENDS:
         if b["name"] == name:
-            return b
+            return b  # type: ignore[return-value]
     return None
 
 
@@ -361,11 +384,17 @@ def set_wallpaper_special(wallpaper_path: Path) -> bool:
         # hyprpaper requires: preload image, then set it on all monitors
         subprocess.run(
             ["hyprctl", "hyprpaper", "preload", str(wallpaper_path)],
-            check=True, capture_output=True, text=True, timeout=10,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         subprocess.run(
             ["hyprctl", "hyprpaper", "wallpaper", f",{wallpaper_path}"],
-            check=True, capture_output=True, text=True, timeout=10,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
@@ -419,6 +448,7 @@ def get_current_wallpaper() -> Path | None:
 # Wallpaper restore cache (desktop environment integration)
 # ---------------------------------------------------------------------------
 
+
 def _detect_wallpaper_cache_paths() -> list[Path]:
     """Detect wallpaper cache files used by various DE frameworks.
 
@@ -452,11 +482,14 @@ def get_wallpaper_cache_paths() -> list[Path]:
 # Monitor resolution detection
 # ---------------------------------------------------------------------------
 
+
 def _detect_resolution_hyprctl() -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             ["hyprctl", "-j", "monitors"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         monitors = json.loads(result.stdout)
         if monitors:
@@ -471,7 +504,9 @@ def _detect_resolution_swaymsg() -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             ["swaymsg", "-t", "get_outputs", "--raw"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         outputs = json.loads(result.stdout)
         for out in outputs:
@@ -489,7 +524,9 @@ def _detect_resolution_wlr_randr() -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             ["wlr-randr", "--json"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         outputs = json.loads(result.stdout)
         for out in outputs:
@@ -504,10 +541,13 @@ def _detect_resolution_wlr_randr() -> tuple[int, int] | None:
 
 def _detect_resolution_xrandr() -> tuple[int, int] | None:
     import re
+
     try:
         result = subprocess.run(
             ["xrandr", "--current"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.splitlines():
             # Match lines like: "eDP-1 connected primary 1920x1080+0+0 ..."
@@ -568,7 +608,9 @@ def _detect_font() -> tuple[str, str]:
     try:
         result = subprocess.run(
             ["magick", "-list", "font"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         for line in result.stdout.splitlines():
             line = line.strip()
@@ -644,9 +686,8 @@ def get_wal_colors() -> dict:
     """
     # 1. User config
     configured = _get("colors")
-    if configured and isinstance(configured, dict):
-        if "colors" in configured:
-            return configured
+    if configured and isinstance(configured, dict) and "colors" in configured:
+        return configured
 
     # 2. Pywal
     wal_path = _XDG_CACHE / "wal" / "colors.json"
@@ -665,6 +706,7 @@ def get_wal_colors() -> dict:
 # Brain files
 # ---------------------------------------------------------------------------
 
+
 def get_brain_files() -> list[str]:
     """Return list of .md filenames in the brain directory."""
     if not BRAIN_DIR.exists():
@@ -676,6 +718,7 @@ def get_brain_files() -> list[str]:
 # ---------------------------------------------------------------------------
 # Plugin config
 # ---------------------------------------------------------------------------
+
 
 def get_plugin_dir() -> Path:
     """Return the plugin directory path."""

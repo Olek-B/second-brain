@@ -1,5 +1,20 @@
 """Telegram Brain Bot - add notes to your Second Brain from your phone.
 
+DEPRECATED: This plugin runs the bot inline (polling from the local
+machine), which requires the local process to be running at all times.
+
+The recommended replacement is the telegram_inbox/ service + the
+telegram_pull.py plugin:
+  - telegram_inbox/  : Flask app hosted on PythonAnywhere, receives
+    messages via webhook, serves them via pull API, and lets you
+    browse notes via inline keyboard menus.
+  - examples/telegram_pull.py : Local plugin that pulls messages on
+    demand (TUI 't' key or `second-brain pull` CLI).
+
+See telegram_inbox/README.md for deployment instructions.
+
+--- Original description below ---
+
 A plugin that runs a Telegram bot in the background, letting you:
   /dump <text>   - Write thoughts to dump.md and process them with AI
   /quick <text>  - Write directly to dump.md without processing
@@ -232,7 +247,7 @@ class TelegramBrainBot(SecondBrainPlugin):
             if not update.effective_user or not _check_user(update.effective_user.id):
                 return
             files = ctx.get_brain_files()
-            nodes, edges = ctx.scan_brain()
+            nodes, edges, _ = ctx.scan_brain()
 
             # Count pending todos
             pending = 0

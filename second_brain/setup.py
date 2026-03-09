@@ -5,7 +5,6 @@ Auto-detects system capabilities and generates ~/.config/second_brain/config.jso
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 from . import config
@@ -33,6 +32,7 @@ def _detect_session_type() -> str:
 def _detect_compositor() -> str:
     """Try to identify the running compositor/WM."""
     import os
+
     # Hyprland
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return "hyprland"
@@ -61,21 +61,25 @@ def detect_all() -> dict:
     wp_backends = []
     for b in config._WALLPAPER_BACKENDS:
         available = _check_tool(b["detect"])
-        wp_backends.append({
-            "name": b["name"],
-            "available": available,
-        })
+        wp_backends.append(
+            {
+                "name": b["name"],
+                "available": available,
+            }
+        )
 
     # Resolution detectors
     res_methods = []
     for name, fn in config._RESOLUTION_DETECTORS:
         if _check_tool(name.split()[0]):
             result = fn()
-            res_methods.append({
-                "name": name,
-                "available": True,
-                "result": list(result) if result else None,
-            })
+            res_methods.append(
+                {
+                    "name": name,
+                    "available": True,
+                    "result": list(result) if result else None,
+                }
+            )
         else:
             res_methods.append({"name": name, "available": False, "result": None})
 
@@ -174,7 +178,9 @@ def run_setup(interactive: bool = True) -> Path:
     print()
 
     print(f"  Font:          {detection['font']['imagemagick']}")
-    print(f"  Pywal:         {'found' if detection['pywal_available'] else 'not found (using defaults)'}")
+    print(
+        f"  Pywal:         {'found' if detection['pywal_available'] else 'not found (using defaults)'}"
+    )
     print()
 
     # Required tools

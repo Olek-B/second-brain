@@ -1,9 +1,5 @@
 """Tests for second_brain.wallpaper module - todo parsing."""
 
-import pytest
-from pathlib import Path
-from unittest.mock import patch
-
 from second_brain import config
 from second_brain.wallpaper import _parse_todos
 

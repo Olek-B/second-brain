@@ -13,8 +13,119 @@ dependencies = [
     "pillow>=10.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
 [project.scripts]
 second-brain = "second_brain.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["second_brain*"]
+
+# ---------------------------------------------------------------------------
+# Ruff - Linting and Formatting
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["second_brain", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults (ok for FastAPI etc.)
+    "B904",   # raise without from (ok for simple re-raises)
+    "ARG002", # unused method arguments (ok for plugin hooks)
+    "ARG001", # unused function arguments (ok for plugin hooks)
+    "ARG005", # unused lambda arguments (ok for callbacks)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["ARG", "B008", "E501", "SIM117", "B007"]  # Test-specific ignores
+"second_brain/plugins.py" = ["E501"]  # Long docstrings
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ---------------------------------------------------------------------------
+# Mypy - Type Checking
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = false
+warn_unused_ignores = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = "second_brain.config"
+warn_return_any = false
+disable_error_code = ["index", "no-any-return"]
+
+[[tool.mypy.overrides]]
+module = "second_brain.plugins"
+warn_return_any = false
+disable_error_code = ["no-any-return"]
+
+[[tool.mypy.overrides]]
+module = "second_brain.setup"
+disable_error_code = ["index"]
+
+# ---------------------------------------------------------------------------
+# Pytest - Testing
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+
+[tool.coverage.run]
+source = ["second_brain"]
+omit = ["tests/*", ".venv/*", "__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "def __repr__",
+    "raise NotImplementedError",
+]
