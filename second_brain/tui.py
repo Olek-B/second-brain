@@ -321,6 +321,9 @@ class BrainApp(App):
         # Auto-pull Telegram and process dump on startup
         self._auto_pull_telegram()
 
+        # Auto-refresh RSS feeds on startup
+        self._do_refresh_rss()
+
     @work(thread=True, exclusive=True)
     def _auto_pull_telegram(self) -> None:
         """Automatically pull Telegram messages and process dump on TUI start."""
@@ -928,9 +931,60 @@ class BrainApp(App):
             content += "*No entries fetched yet. Press `R` to refresh.*\n"
         
         content += "\n*Tip: Click any link to open in browser. Press `R` to refresh feeds.*"
-        
+
         preview.set_content(content)
         self._set_status(f" Showing {len(feeds)} feeds, {len(entries)} entries")
+
+    @work(thread=True)
+    def _do_refresh_rss(self) -> None:
+        """Refresh RSS feeds in background thread."""
+        self.app.call_from_thread(self._set_status, " Refreshing RSS feeds...")
+
+        try:
+            from .rss_reader import get_all_entries, load_feeds
+
+            # Clear any cache and refetch
+            entries = get_all_entries()
+            feeds = load_feeds()
+
+            # Update the preview pane with refreshed content
+            title = self.query_one("#preview-title", Static)
+            preview = self.query_one("#preview", PreviewPane)
+
+            if not feeds:
+                self.app.call_from_thread(
+                    self._set_status,
+                    " No feeds configured"
+                )
+                return
+
+            # Rebuild content (same as action_view_rss)
+            content = "## Configured Feeds\n\n"
+            for feed in feeds:
+                content += f"### {feed.name} ({feed.feed_type})\n"
+                content += f"URL: `{feed.url}`\n\n"
+
+            content += "---\n\n## Latest Entries\n\n"
+
+            if entries:
+                for entry in entries[:20]:
+                    time_str = entry.published.strftime("%Y-%m-%d %H:%M")
+                    content += f"### [{entry.title}]({entry.link})\n\n"
+                    content += f"*{time_str} • {entry.source}*\n\n"
+                    if entry.summary:
+                        content += f"{entry.summary}\n\n"
+                    content += "---\n\n"
+            else:
+                content += "*No entries fetched.*\n"
+
+            self.app.call_from_thread(preview.set_content, content)
+            self.app.call_from_thread(
+                self._set_status,
+                f" Refreshed {len(feeds)} feeds, {len(entries)} entries"
+            )
+
+        except Exception as e:
+            self.app.call_from_thread(self._set_status, f" RSS refresh error: {e}")
 
     def action_view_analytics(self) -> None:
         """Show personal analytics dashboard in the preview pane."""
