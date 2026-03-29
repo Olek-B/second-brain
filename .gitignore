@@ -1,7 +1,52 @@
+# Virtual environments
 .venv/
+venv/
+.env
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Build artifacts
 *.egg-info/
 dist/
 build/
-.env
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Type checking
+.mypy_cache/
+
+# Logs
+*.log
+logs/
+
+# Generated files
+*.png
+second_brain_graph_overlay.png
+second_brain_todo_overlay.png
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config (optional - uncomment if you don't want to track config)
+# ~/.config/second_brain/config.json
+# ~/.config/second_brain/groq_key
+
+# Git worktrees
+.worktrees/
