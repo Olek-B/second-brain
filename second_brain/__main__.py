@@ -47,6 +47,8 @@ commands:
   boot-sync    Pull Telegram + process dump (for boot automation)
   install-timer  Install systemd user timer for boot-sync
   uninstall-timer  Remove the systemd user timer
+  rss          List RSS feeds or fetch latest entries
+  analytics    Show personal analytics about your knowledge base
 
 examples:
   second-brain                  # Launch TUI
@@ -56,6 +58,8 @@ examples:
   second-brain janitor          # Run cleanup pass
   second-brain janitor --dry-run # Preview changes without writing
   second-brain ask "what did I write about DNS?"
+  second-brain backlinks        # Show backlink summary
+  second-brain backlinks dns    # Show files linking to dns.md
   second-brain check-links      # Check for broken/orphaned links
   second-brain daily            # Create/open today's note
   second-brain tags             # List all tags
@@ -64,6 +68,9 @@ examples:
   second-brain dot > graph.dot  # Export DOT for debugging
   second-brain pull             # Pull Telegram messages
   second-brain sync             # Push notes to remote
+  second-brain invest "{ale} allegro - 3 - 25.50"  # Add investment with buy price
+  second-brain invest --refresh            # Refresh all investment prices
+  second-brain librus                      # Sync grades/exams from Librus
 """,
     )
 
@@ -78,6 +85,7 @@ examples:
             "graph",
             "janitor",
             "ask",
+            "backlinks",
             "list",
             "dot",
             "check-links",
@@ -90,6 +98,10 @@ examples:
             "boot-sync",
             "install-timer",
             "uninstall-timer",
+            "invest",
+            "librus",
+            "rss",
+            "analytics",
         ],
         help="Command to run (default: tui)",
     )
@@ -107,10 +119,42 @@ examples:
     )
 
     parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh all investment prices from Stooq (used with 'invest' command)",
+    )
+
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         help="Enable verbose (debug) logging",
+    )
+
+    parser.add_argument(
+        "--add",
+        nargs=2,
+        metavar=("NAME", "URL"),
+        help="Add a new RSS feed (used with 'rss' command)",
+    )
+
+    parser.add_argument(
+        "--remove",
+        metavar="NAME",
+        help="Remove an RSS feed by name (used with 'rss' command)",
+    )
+
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Number of days for analytics (used with 'analytics' command)",
+    )
+
+    parser.add_argument(
+        "--export",
+        choices=["json", "markdown"],
+        help="Export format (used with 'analytics' command)",
     )
 
     parser.add_argument(
@@ -214,6 +258,37 @@ examples:
 
         print()
         print(answer)
+
+    elif args.command == "backlinks":
+        from .backlinks import get_all_backlinks, get_backlinks
+
+        target = args.question
+        if target:
+            # Show backlinks for a specific file
+            if not target.endswith(".md"):
+                target = f"{target}.md"
+            backlinks = get_backlinks(target)
+            if not backlinks:
+                log.info("No files link to %s", target)
+            else:
+                log.info("Files linking to %s (%d):\n", target, len(backlinks))
+                for bl in sorted(backlinks):
+                    log.info("  [[%s]]", bl.removesuffix(".md"))
+        else:
+            # Show backlink summary for all files
+            backlink_index = get_all_backlinks()
+            files_with_backlinks = {k: v for k, v in backlink_index.items() if v}
+            if not files_with_backlinks:
+                log.info("No backlinks found in your brain.")
+            else:
+                log.info("Backlink Summary (%d files with incoming links):\n", len(files_with_backlinks))
+                for fname in sorted(files_with_backlinks.keys()):
+                    blist = files_with_backlinks[fname]
+                    log.info("  %s (%d backlinks)", fname, len(blist))
+                    for bl in sorted(blist)[:5]:  # Show first 5
+                        log.info("    <- [[%s]]", bl.removesuffix(".md"))
+                    if len(blist) > 5:
+                        log.info("    ... and %d more", len(blist) - 5)
 
     elif args.command == "list":
         from . import config
@@ -394,6 +469,224 @@ examples:
 
     elif args.command == "uninstall-timer":
         _uninstall_timer()
+
+    elif args.command == "invest":
+        from .investments import (
+            get_portfolio_summary,
+            parse_investment_input,
+            refresh_all_investments,
+            update_investment,
+        )
+
+        if args.refresh:
+            # Refresh all investments
+            log.info("Refreshing all investment prices from Stooq...")
+            try:
+                updated = refresh_all_investments()
+                summary = get_portfolio_summary()
+                log.info("Refreshed %d investments", len(updated))
+                log.info(
+                    "Portfolio: %d/%d positions valued at %.2f PLN",
+                    summary["invested_count"],
+                    summary["total_count"],
+                    summary["total_value"],
+                )
+            except Exception as e:
+                log.error("Error refreshing investments: %s", e)
+                sys.exit(1)
+        else:
+            # Add/update single investment
+            investment_str = args.question
+            if not investment_str:
+                # Read from stdin if no argument given
+                print(
+                    "Enter investment in format: {ticker} name - shares [- buy_price]",
+                    file=sys.stderr,
+                )
+                print("Example: {ale} allegro - 3 - 25.50", file=sys.stderr)
+                investment_str = input("> ").strip()
+
+            if not investment_str:
+                log.error("No investment provided.")
+                sys.exit(1)
+
+            try:
+                ticker, name, shares, buy_price = parse_investment_input(investment_str)
+            except ValueError as e:
+                log.error("Error: %s", e)
+                sys.exit(1)
+
+            log.info("Adding/updating investment: %s (%s) - %.2f shares @ %.2f", name, ticker, shares, buy_price)
+            try:
+                investment = update_investment(ticker, name, shares, buy_price)
+                if investment.current_price:
+                    gain_loss = investment.gain_loss
+                    gain_loss_pct = investment.gain_loss_pct
+                    if gain_loss is not None and gain_loss_pct is not None:
+                        sign = "+" if gain_loss >= 0 else ""
+                        log.info(
+                            "Updated! %s: %d shares × %.2f %s = %.2f %s | P/L: %s%.2f (%s%.1f%%)",
+                            investment.ticker,
+                            investment.shares,
+                            investment.current_price,
+                            investment.currency,
+                            investment.market_value,
+                            investment.currency,
+                            sign,
+                            gain_loss,
+                            sign,
+                            gain_loss_pct,
+                        )
+                    else:
+                        log.info(
+                            "Updated! %s: %d shares × %.2f %s = %.2f %s",
+                            investment.ticker,
+                            investment.shares,
+                            investment.current_price,
+                            investment.currency,
+                            investment.market_value,
+                            investment.currency,
+                        )
+                else:
+                    log.info(
+                        "Updated! %s: %d shares (price unavailable)",
+                        investment.ticker,
+                        investment.shares,
+                    )
+            except Exception as e:
+                log.error("Error updating investment: %s", e)
+                sys.exit(1)
+
+    elif args.command == "librus":
+        from .plugins import get_manager
+
+        pm = get_manager()
+        librus_plugin = None
+        for p in pm.plugins:
+            if p.name == "librus_sync":
+                librus_plugin = p
+                break
+
+        if librus_plugin is None:
+            log.error(
+                "Error: librus_sync plugin not loaded.\n"
+                "Enable it in config.json: plugins.enabled"
+            )
+            sys.exit(1)
+
+        librus_plugin.do_sync()  # type: ignore[attr-defined]
+
+    elif args.command == "rss":
+        _run_rss(add=args.add, remove=args.remove)
+
+    elif args.command == "analytics":
+        _run_analytics(days=args.days, export_format=args.export)
+
+
+def _run_rss(
+    add: tuple[str, str] | None = None,
+    remove: str | None = None,
+) -> None:
+    """Run RSS feed commands.
+    
+    Args:
+        add: Tuple of (name, url) to add new feed.
+        remove: Name of feed to remove.
+    """
+    from .rss_reader import RSSFeed, load_feeds, save_feeds, get_all_entries
+    
+    if add:
+        # Add new feed
+        name, url = add
+        feeds = load_feeds()
+        
+        # Check if already exists
+        for feed in feeds:
+            if feed.name.lower() == name.lower():
+                log.error("Feed '%s' already exists", name)
+                sys.exit(1)
+        
+        # Determine feed type
+        feed_type = "youtube" if "youtube.com" in url else "standard"
+        
+        feeds.append(RSSFeed(name=name, url=url, feed_type=feed_type))
+        save_feeds(feeds)
+        log.info("Added %s feed: %s (%s)", feed_type, name, url)
+        
+    elif remove:
+        # Remove feed
+        feeds = load_feeds()
+        original_count = len(feeds)
+        feeds = [f for f in feeds if f.name.lower() != remove.lower()]
+        
+        if len(feeds) == original_count:
+            log.error("Feed '%s' not found", remove)
+            sys.exit(1)
+        
+        save_feeds(feeds)
+        log.info("Removed feed: %s", remove)
+        
+    else:
+        # List feeds or fetch entries
+        feeds = load_feeds()
+        
+        if not feeds:
+            log.info("No RSS feeds configured.")
+            log.info("Add feeds with: second-brain rss --add \"Name\" \"URL\"")
+            return
+        
+        log.info("Configured RSS Feeds (%d):", len(feeds))
+        for feed in feeds:
+            log.info("  %s [%s] - %s", feed.name, feed.feed_type, feed.url)
+        
+        # Always fetch latest entries when listing
+        log.info("\nFetching latest entries...")
+        entries = get_all_entries()
+        
+        if entries:
+            log.info("\nLatest Entries (%d):", len(entries))
+            for entry in entries[:10]:  # Show 10 most recent
+                log.info(
+                    "  [%s] %s - %s (%s)",
+                    entry.source,
+                    entry.title,
+                    entry.published.strftime("%Y-%m-%d %H:%M"),
+                    entry.link[:50] + "..." if len(entry.link) > 50 else entry.link,
+                )
+        else:
+            log.info("\nNo entries fetched.")
+
+
+def _run_analytics(days: int = 30, export_format: str | None = None) -> None:
+    """Run analytics and display/export results.
+    
+    Args:
+        days: Number of days for trend analysis.
+        export_format: Export format ('json', 'markdown', or None for dashboard).
+    """
+    from .analytics import (
+        export_analytics_json,
+        export_analytics_markdown,
+        format_analytics_dashboard,
+        get_full_analytics,
+    )
+    
+    log.info("Gathering analytics...")
+    
+    try:
+        data = get_full_analytics(days=days)
+    except Exception as e:
+        log.error("Error gathering analytics: %s", e)
+        sys.exit(1)
+    
+    if export_format == "json":
+        print(export_analytics_json(data))
+    elif export_format == "markdown":
+        print(export_analytics_markdown(data))
+    else:
+        # Display dashboard
+        dashboard = format_analytics_dashboard(data)
+        print(dashboard)
 
 
 def _run_boot_sync() -> None:
