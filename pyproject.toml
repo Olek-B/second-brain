@@ -8,9 +8,11 @@ version = "0.1.0"
 description = "AI-driven markdown knowledge base with graph visualization"
 requires-python = ">=3.12"
 dependencies = [
-    "textual>=1.0.0",
+    "beautifulsoup4>=4.12.0",
     "groq>=0.4.0",
     "pillow>=10.0.0",
+    "requests>=2.31.0",
+    "textual>=1.0.0",
 ]
 
 [project.optional-dependencies]
