@@ -1,11 +1,47 @@
 """Wallpaper Layering - composite graph + todo panel onto wallpaper."""
 
+import logging
 import re
 import subprocess
 from pathlib import Path
 
 from . import config
 from .plugins import get_manager
+from .rss_reader import RSSEntry, get_latest_entries
+
+log = logging.getLogger("second_brain.wallpaper")
+
+
+def _parse_investments() -> list[dict] | None:
+    """Parse investments.md and return investment data.
+
+    Returns list of dicts with ticker, name, shares, buy_price, price, value, currency
+    or None if no investments exist.
+    """
+    from .investments import get_portfolio_summary, load_investments
+
+    investments = load_investments()
+    summary = get_portfolio_summary()
+
+    if not investments:
+        return None
+
+    data = []
+    for inv in investments:
+        if inv.current_price is not None:
+            data.append(
+                {
+                    "ticker": inv.ticker,
+                    "name": inv.name,
+                    "shares": inv.shares,
+                    "buy_price": inv.buy_price,
+                    "price": inv.current_price,
+                    "value": inv.market_value,
+                    "currency": inv.currency,
+                }
+            )
+
+    return {"investments": data, "summary": summary}
 
 
 def _parse_todos() -> list[tuple[bool, str]]:
@@ -39,6 +75,272 @@ def _parse_todos() -> list[tuple[bool, str]]:
     items = pm.dispatch_after_parse_todos(items)
 
     return items
+
+
+def render_investments_overlay(output_path: Path | None = None) -> Path | None:
+    """Render the investment portfolio as a transparent PNG for the bottom-left corner.
+
+    Uses ImageMagick to draw text on a semi-transparent dark panel.
+    Returns the path to the overlay PNG, or None if no investments exist.
+    """
+    pm = get_manager()
+
+    if output_path is None:
+        output_path = config.BRAIN_DIR / "investments_overlay.png"
+
+    inv_data = _parse_investments()
+
+    if not inv_data:
+        # Clean up old overlay if no investments
+        output_path.unlink(missing_ok=True)
+        return None
+
+    # --- Hook: before_render_investments_overlay ---
+    pm.dispatch_before_render_investments_overlay(inv_data)
+
+    width, height = config.get_monitor_resolution()
+    wal = config.get_wal_colors()
+    colors = wal.get("colors", {})
+    im_font, _ = config.get_font()
+
+    # Get colors with proper fallbacks
+    fg = colors.get("color15", "#ebdbb2") or "#ebdbb2"
+    bg = colors.get("color0", "#1d2021") or "#1d2021"
+    
+    # Find a good accent color from available colors
+    accent = None
+    for key in ("color10", "color11", "color12", "color4", "color6", "color3"):
+        c = colors.get(key, "")
+        if c:
+            accent = c
+            break
+    if not accent:
+        accent = "#83a598"  # Default blue-green
+
+    # Panel dimensions: bottom-left, compact
+    panel_w = int(width * 0.25)  # 25% of screen width
+    panel_h = 180  # Fixed height for investments
+    pad_x = 20
+    pad_y = 15
+    line_height = 20
+    title_size = 14
+    item_size = 10
+
+    # Limit to 5 investments max
+    display_investments = inv_data["investments"][:5]
+    remaining = len(inv_data["investments"]) - len(display_investments)
+    summary = inv_data["summary"]
+
+    # Build ImageMagick draw commands
+    draw_cmds = []
+
+    # Semi-transparent dark background panel with rounded corners
+    draw_cmds.append(
+        f"roundrectangle {pad_x - 10},{pad_y - 10} "
+        f"{panel_w - 20},{panel_h - 20} "
+        f"10,10"
+    )
+
+    magick_args = [
+        "magick",
+        "-size",
+        f"{panel_w}x{panel_h}",
+        "xc:none",
+        # Draw the background panel
+        "-fill",
+        f"{bg}C0",
+        "-stroke",
+        f"{accent}80",
+        "-strokewidth",
+        "1",
+        "-draw",
+        draw_cmds[0],
+        # Title with total value
+        "-font",
+        im_font,
+        "-fill",
+        accent,
+        "-strokewidth",
+        "0",
+        "-pointsize",
+        str(title_size),
+        "-gravity",
+        "NorthWest",
+        "-annotate",
+        f"+{pad_x}+{pad_y}",
+        f"  Investments: {summary['total_value']:.0f} PLN",
+    ]
+
+    # Draw separator line
+    magick_args.extend(
+        [
+            "-fill",
+            f"{accent}60",
+            "-draw",
+            f"line {pad_x},{pad_y + 25} {panel_w - pad_x},{pad_y + 25}",
+        ]
+    )
+
+    # Draw each investment
+    y = pad_y + 42
+    for inv in display_investments:
+        ticker = inv["ticker"].upper()
+        value = inv["value"]
+        shares = inv["shares"]
+        price = inv["price"]
+        currency = inv.get("currency", "PLN")
+        buy_price = inv.get("buy_price", 0)
+        
+        # Calculate gain/loss
+        gain_loss = (price - buy_price) * shares if buy_price > 0 else 0
+        gain_loss_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+        gain_sign = "+" if gain_loss >= 0 else ""
+        
+        # Format: TICKER  value  (+/-X%)
+        line_text = f"  {ticker:<6} {value:.0f} {currency}  ({gain_sign}{gain_loss_pct:.1f}%)"
+
+        magick_args.extend(
+            [
+                "-fill",
+                fg,
+                "-pointsize",
+                str(item_size),
+                "-annotate",
+                f"+{pad_x}+{y}",
+                line_text,
+            ]
+        )
+        y += line_height
+
+    # Show remaining count if truncated
+    if remaining > 0:
+        magick_args.extend(
+            [
+                "-fill",
+                f"{fg}88",
+                "-pointsize",
+                str(item_size - 1),
+                "-annotate",
+                f"+{pad_x}+{y + 3}",
+                f"   +{remaining} more...",
+            ]
+        )
+
+    magick_args.append(str(output_path))
+
+    subprocess.run(
+        magick_args,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    # --- Hook: after_render_investments_overlay ---
+    pm.dispatch_after_render_investments_overlay(output_path)
+
+    return output_path
+
+
+def render_rss_overlay(output_path: Path | None = None) -> Path | None:
+    """Render RSS feed entries as a transparent PNG for the wallpaper.
+
+    Shows the latest 5-7 entries from all feeds.
+    Returns the path to the overlay PNG, or None if no entries.
+
+    Args:
+        output_path: Output path for the overlay PNG.
+
+    Returns:
+        Path to rendered overlay, or None if no entries.
+    """
+    pm = get_manager()
+
+    if output_path is None:
+        output_path = config.BRAIN_DIR / "rss_overlay.png"
+
+    entries = get_latest_entries(n=7)
+
+    if not entries:
+        # Clean up old overlay if no entries
+        if output_path.exists():
+            output_path.unlink()
+        return None
+
+    # --- Hook: before_render_rss_overlay ---
+    pm.dispatch_before_render_rss_overlay(entries)
+
+    width, height = config.get_monitor_resolution()
+
+    # RSS panel dimensions (left side, below todo panel)
+    panel_width = int(width * 0.18)  # 18% of screen width
+    panel_height = int(height * 0.3)  # 30% of screen height
+    panel_x = 20  # Left margin
+    panel_y = int(height * 0.35)  # Start below todo panel (35% down)
+
+    # Get colors
+    wal = config.get_wal_colors()
+    colors = wal.get("colors", {})
+    bg = colors.get("color0", "#1d2021")
+    fg = colors.get("color15", "#ebdbb2")
+    accent = colors.get("color4", "#458588")
+
+    # Get font
+    font_im, _ = config.get_font()
+
+    # Build text content
+    lines = [
+        "RSS Feed",
+        "=" * 40,
+    ]
+
+    for entry in entries[:7]:
+        # Truncate title to fit panel width (~50 chars)
+        title = entry.title[:50] + "..." if len(entry.title) > 50 else entry.title
+        source = entry.source[:20]
+        lines.append(f"• {title}")
+        lines.append(f"  [{source}]")
+
+    # Create text content
+    text_content = "\n".join(lines)
+
+    # Create overlay with ImageMagick
+    magick_cmds = [
+        "magick",
+        "-size",
+        f"{panel_width}x{panel_height}",
+        "xc:none",  # Transparent background
+        "-font",
+        font_im,
+        "-pointsize",
+        "14",
+        "-fill",
+        fg,
+        "-gravity",
+        "NorthWest",
+        "-annotate",
+        f"+10+10",
+        text_content.replace("\n", "\\n"),
+        str(output_path),
+    ]
+
+    try:
+        subprocess.run(
+            magick_cmds,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        # --- Hook: after_render_rss_overlay ---
+        pm.dispatch_after_render_rss_overlay(output_path)
+
+        return output_path
+
+    except subprocess.CalledProcessError as e:
+        log.error("Error creating RSS overlay: %s", e.stderr)
+        return None
 
 
 def render_todo_overlay(output_path: Path | None = None) -> Path | None:
@@ -192,9 +494,9 @@ def composite_wallpaper(
     wallpaper_path: Path | None = None,
     output_path: Path | None = None,
 ) -> Path:
-    """Composite graph (right) and todo panel (left) onto the wallpaper.
+    """Composite graph (right), todo panel (left), and investments (bottom-left) onto wallpaper.
 
-    Uses ImageMagick to layer both overlays onto the base wallpaper.
+    Uses ImageMagick to layer overlays onto the base wallpaper.
     Returns the path to the composited wallpaper.
     """
     pm = get_manager()
@@ -224,8 +526,38 @@ def composite_wallpaper(
 
     width, height = config.get_monitor_resolution()
 
-    # Render todo overlay
+    # Render todo overlay (left side)
     todo_path = render_todo_overlay()
+
+    # Render investments overlay (bottom-left corner)
+    investments_path = render_investments_overlay()
+
+    # Create gradient panel for graph area (left-to-right fade)
+    panel_w = int(width * 0.78)  # Graph area width
+    wal = config.get_wal_colors()
+    colors = wal.get("colors", {})
+    bg = colors.get("color0", "#1d2021")
+
+    gradient_panel_path = config.GRAPH_OUTPUT.parent / "gradient_panel.png"
+
+    # Create left-to-right gradient panel (transparent on left, darker on right)
+    gradient_cmds = [
+        "magick",
+        "-size",
+        f"{panel_w}x{height}",
+        f"gradient:{bg}D0-{bg}00",
+        "-rotate",
+        "90",
+        str(gradient_panel_path),
+    ]
+
+    subprocess.run(
+        gradient_cmds,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
 
     # Build the composite command
     # Base: resize wallpaper to monitor resolution
@@ -251,7 +583,17 @@ def composite_wallpaper(
             ]
         )
 
-    # Layer 2: graph on the right
+    # Layer 2: gradient panel on the right (left-to-right fade)
+    magick_args.extend(
+        [
+            str(gradient_panel_path),
+            "-gravity",
+            "East",
+            "-composite",
+        ]
+    )
+
+    # Layer 3: graph on the right (composited over gradient panel)
     magick_args.extend(
         [
             str(graph_path),
@@ -260,6 +602,17 @@ def composite_wallpaper(
             "-composite",
         ]
     )
+
+    # Layer 4: investments panel on bottom-left
+    if investments_path and investments_path.exists():
+        magick_args.extend(
+            [
+                str(investments_path),
+                "-gravity",
+                "SouthWest",
+                "-composite",
+            ]
+        )
 
     magick_args.append(str(output_path))
 
@@ -270,6 +623,9 @@ def composite_wallpaper(
         text=True,
         timeout=30,
     )
+
+    # Clean up temporary gradient panel
+    gradient_panel_path.unlink(missing_ok=True)
 
     # --- Hook: after_composite ---
     pm.dispatch_after_composite(output_path)

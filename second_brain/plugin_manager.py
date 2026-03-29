@@ -289,6 +289,34 @@ class PluginManager:
         self._dispatch_observational("after_ask", question, answer)
 
     # -------------------------------------------------------------------
+    # Backlinks dispatchers
+    # -------------------------------------------------------------------
+
+    def dispatch_before_inject_backlinks(
+        self,
+        fname: str,
+        backlinks_section: str,
+        backlinks: list[str],
+    ) -> str:
+        """Dispatch before_inject_backlinks hook - mutating."""
+        value = backlinks_section
+        for plugin in self._plugins:
+            fn = getattr(plugin, "before_inject_backlinks", None)
+            if fn is None:
+                continue
+            try:
+                result = fn(fname, value, backlinks)
+                if result is not None:
+                    value = result
+            except Exception as e:
+                _log_error(plugin, "before_inject_backlinks", e)
+        return value
+
+    def dispatch_after_inject_backlinks(self, fname: str, content: str) -> None:
+        """Dispatch after_inject_backlinks hook - observational."""
+        self._dispatch_observational("after_inject_backlinks", fname, content)
+
+    # -------------------------------------------------------------------
     # Graph dispatchers
     # -------------------------------------------------------------------
 
@@ -360,6 +388,20 @@ class PluginManager:
                 _log_error(plugin, "on_dot_external_node", e)
         return attrs
 
+    def dispatch_on_dot_external_link_node(
+        self,
+        link_data: dict,
+        attrs: dict,
+    ) -> dict:
+        for plugin in self._plugins:
+            try:
+                result = plugin.on_dot_external_link_node(link_data, attrs)
+                if result is not None:
+                    attrs = result
+            except Exception as e:
+                _log_error(plugin, "on_dot_external_link_node", e)
+        return attrs
+
     def dispatch_after_generate_dot(self, dot_source: str) -> str:
         return self._dispatch_mutating("after_generate_dot", dot_source)
 
@@ -419,6 +461,30 @@ class PluginManager:
 
     def dispatch_after_refresh_wallpaper(self, result: str) -> None:
         self._dispatch_observational("after_refresh_wallpaper", result)
+
+    def dispatch_before_render_investments_overlay(
+        self,
+        inv_data: dict,
+    ) -> None:
+        self._dispatch_observational("before_render_investments_overlay", inv_data)
+
+    def dispatch_after_render_investments_overlay(
+        self,
+        output_path: Path | None,
+    ) -> None:
+        self._dispatch_observational("after_render_investments_overlay", output_path)
+
+    def dispatch_before_render_rss_overlay(
+        self,
+        entries: list[Any],
+    ) -> None:
+        self._dispatch_observational("before_render_rss_overlay", entries)
+
+    def dispatch_after_render_rss_overlay(
+        self,
+        output_path: Path | None,
+    ) -> None:
+        self._dispatch_observational("after_render_rss_overlay", output_path)
 
     def dispatch_before_daily_note_create(self, filename: str) -> None:
         self._dispatch_observational("before_daily_note_create", filename)
@@ -547,6 +613,9 @@ class PluginManager:
 
     def dispatch_on_wikilink_clicked(self, target: str) -> None:
         self._dispatch_observational("on_wikilink_clicked", target)
+
+    def dispatch_on_external_link_clicked(self, url: str, domain: str) -> None:
+        self._dispatch_observational("on_external_link_clicked", url, domain)
 
     def dispatch_before_tui_process_dump(self) -> None:
         self._dispatch_observational("before_tui_process_dump")

@@ -1,5 +1,9 @@
 """Tests for second_brain.wallpaper module - todo parsing."""
 
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+from datetime import datetime
+
 from second_brain import config
 from second_brain.wallpaper import _parse_todos
 
@@ -93,3 +97,50 @@ class TestParseTodos:
             assert len(items) == 4
         finally:
             config.TODO_FILE = old
+
+
+class TestRSSOverlay:
+    """Test RSS wallpaper overlay rendering."""
+
+    @patch('second_brain.wallpaper.get_latest_entries')
+    def test_render_rss_overlay_creates_file(
+        self, 
+        mock_get: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test RSS overlay creates PNG file."""
+        from second_brain.rss_reader import RSSEntry
+        from second_brain.wallpaper import render_rss_overlay
+        
+        mock_get.return_value = [
+            RSSEntry(
+                title="Test Video Title",
+                link="https://youtube.com/watch?v=abc",
+                published=datetime(2026, 3, 29, 10, 0),
+                source="Test Channel",
+                summary=None,
+            )
+        ]
+        
+        output_path = tmp_path / "rss_overlay.png"
+        result = render_rss_overlay(output_path=output_path)
+        
+        assert result is not None
+        assert result.exists()
+        assert result == output_path
+
+    @patch('second_brain.wallpaper.get_latest_entries')
+    def test_render_rss_overlay_returns_none_when_empty(
+        self, 
+        mock_get: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test RSS overlay returns None when no entries."""
+        from second_brain.wallpaper import render_rss_overlay
+        
+        mock_get.return_value = []
+        
+        output_path = tmp_path / "rss_overlay.png"
+        result = render_rss_overlay(output_path=output_path)
+        
+        assert result is None
