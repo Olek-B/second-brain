@@ -494,7 +494,7 @@ def composite_wallpaper(
     wallpaper_path: Path | None = None,
     output_path: Path | None = None,
 ) -> Path:
-    """Composite graph (right), todo panel (left), and investments (bottom-left) onto wallpaper.
+    """Composite graph (right), todo panel (left), RSS panel (left), and investments (bottom-left) onto wallpaper.
 
     Uses ImageMagick to layer overlays onto the base wallpaper.
     Returns the path to the composited wallpaper.
@@ -528,6 +528,9 @@ def composite_wallpaper(
 
     # Render todo overlay (left side)
     todo_path = render_todo_overlay()
+
+    # Render RSS overlay (left side, below todo)
+    rss_path = render_rss_overlay()
 
     # Render investments overlay (bottom-left corner)
     investments_path = render_investments_overlay()
@@ -583,7 +586,20 @@ def composite_wallpaper(
             ]
         )
 
-    # Layer 2: gradient panel on the right (left-to-right fade)
+    # Layer 2: RSS panel (left side, below todo)
+    if rss_path and rss_path.exists():
+        magick_args.extend(
+            [
+                str(rss_path),
+                "-gravity",
+                "NorthWest",
+                "-geometry",
+                f"+20+{int(height * 0.35)}",
+                "-composite",
+            ]
+        )
+
+    # Layer 3: gradient panel on the right (left-to-right fade)
     magick_args.extend(
         [
             str(gradient_panel_path),
@@ -593,7 +609,7 @@ def composite_wallpaper(
         ]
     )
 
-    # Layer 3: graph on the right (composited over gradient panel)
+    # Layer 4: graph on the right (composited over gradient panel)
     magick_args.extend(
         [
             str(graph_path),
@@ -603,7 +619,7 @@ def composite_wallpaper(
         ]
     )
 
-    # Layer 4: investments panel on bottom-left
+    # Layer 5: investments panel on bottom-left
     if investments_path and investments_path.exists():
         magick_args.extend(
             [
