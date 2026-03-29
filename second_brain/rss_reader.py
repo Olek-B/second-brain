@@ -5,11 +5,17 @@ Manages RSS feed configuration and fetching.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
+import feedparser
+
 from second_brain import config
+
+log = logging.getLogger("second_brain.rss_reader")
 
 # Pattern to match feed lines: - [[name]] - url
 _FEED_LINE_PATTERN = re.compile(r"^-\s*\[\[([^\]]+)\]\]\s*-\s*(.+)$")
@@ -22,6 +28,17 @@ class RSSFeed:
     name: str
     url: str
     feed_type: str  # "youtube" or "standard"
+
+
+@dataclass
+class RSSEntry:
+    """Represents a parsed RSS entry."""
+
+    title: str
+    link: str
+    published: datetime
+    source: str
+    summary: str | None = None
 
 
 def get_rss_file_path() -> Path:
@@ -94,3 +111,69 @@ def save_feeds(feeds: list[RSSFeed]) -> None:
         lines.append("\n")
     
     rss_file.write_text("".join(lines))
+
+
+def _parse_published(entry: dict) -> datetime:
+    """Parse published date from feed entry."""
+    published_parsed = entry.get('published_parsed')
+    if published_parsed:
+        return datetime(*published_parsed[:6])
+
+    # Fallback to updated_parsed
+    updated_parsed = entry.get('updated_parsed')
+    if updated_parsed:
+        return datetime(*updated_parsed[:6])
+
+    # Default to now
+    return datetime.now()
+
+
+def fetch_feed(url: str) -> list[RSSEntry]:
+    """Fetch and parse a single RSS/Atom feed.
+
+    Args:
+        url: URL of the RSS/Atom feed.
+
+    Returns:
+        List of RSSEntry objects, or empty list on error.
+    """
+    try:
+        feed = feedparser.parse(url)
+
+        if feed.bozo:
+            log.warning("Bozo feed (parse warning) for %s: %s", url, feed.bozo_exception)
+
+        entries: list[RSSEntry] = []
+        feed_title = feed.feed.get('title', 'Unknown Feed')
+
+        for entry in feed.entries:
+            title = entry.get('title', 'No Title')
+            link = entry.get('link', '')
+
+            if not link:
+                # Some feeds use id for link
+                link = entry.get('id', '')
+
+            published = _parse_published(entry)
+            summary = entry.get('summary', entry.get('description', None))
+
+            # Clean summary (remove HTML tags)
+            if summary:
+                summary = re.sub(r'<[^>]+>', '', summary).strip()
+                # Truncate long summaries
+                if len(summary) > 200:
+                    summary = summary[:197] + "..."
+
+            entries.append(RSSEntry(
+                title=title,
+                link=link,
+                published=published,
+                source=feed_title,
+                summary=summary,
+            ))
+
+        return entries
+
+    except Exception as e:
+        log.error("Error fetching feed %s: %s", url, e)
+        return []

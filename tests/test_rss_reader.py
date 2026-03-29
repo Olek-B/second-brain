@@ -1,12 +1,13 @@
 """Tests for RSS reader functionality."""
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from second_brain import config
-from second_brain.rss_reader import RSSFeed, load_feeds, save_feeds
+from second_brain.rss_reader import RSSFeed, RSSEntry, fetch_feed, load_feeds, save_feeds
 
 
 class TestRSSFeed:
@@ -72,3 +73,60 @@ class TestFeedConfiguration:
         content = rss_file.read_text()
         assert "# RSS Feeds" in content
         assert "TestChannel" in content
+
+
+class TestFeedFetching:
+    """Test RSS feed fetching and parsing."""
+
+    @patch('second_brain.rss_reader.feedparser.parse')
+    def test_fetch_feed_parses_entries(self, mock_parse: MagicMock) -> None:
+        """Test fetching and parsing a feed."""
+        # Mock feedparser response using MagicMock to support attribute access
+        mock_feed = MagicMock()
+        mock_feed.bozo = False
+        mock_feed.feed = {'title': 'Test Channel'}
+        mock_feed.entries = [
+            {
+                'title': 'Test Video',
+                'link': 'https://youtube.com/watch?v=abc123',
+                'published_parsed': (2026, 3, 29, 10, 0, 0, 0, 0, 0),
+                'summary': 'Test description',
+            }
+        ]
+        mock_parse.return_value = mock_feed
+
+        entries = fetch_feed("https://youtube.com/feeds/videos.xml?channel_id=abc123")
+
+        assert len(entries) == 1
+        assert entries[0].title == "Test Video"
+        assert entries[0].source == "Test Channel"
+        assert entries[0].link == "https://youtube.com/watch?v=abc123"
+
+    @patch('second_brain.rss_reader.feedparser.parse')
+    def test_fetch_feed_handles_missing_summary(self, mock_parse: MagicMock) -> None:
+        """Test fetching entry without summary."""
+        mock_feed = MagicMock()
+        mock_feed.bozo = False
+        mock_feed.feed = {'title': 'Blog'}
+        mock_feed.entries = [
+            {
+                'title': 'No Summary',
+                'link': 'https://example.com/post',
+                'published_parsed': (2026, 3, 29, 10, 0, 0, 0, 0, 0),
+            }
+        ]
+        mock_parse.return_value = mock_feed
+
+        entries = fetch_feed("https://example.com/rss.xml")
+
+        assert len(entries) == 1
+        assert entries[0].summary is None
+
+    @patch('second_brain.rss_reader.feedparser.parse')
+    def test_fetch_feed_handles_errors(self, mock_parse: MagicMock) -> None:
+        """Test fetching feed that raises exception."""
+        mock_parse.side_effect = Exception("Network error")
+
+        entries = fetch_feed("https://invalid-url.com/rss.xml")
+
+        assert entries == []
