@@ -7,7 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from second_brain import config
-from second_brain.rss_reader import RSSFeed, RSSEntry, fetch_feed, load_feeds, save_feeds
+from second_brain.rss_reader import (
+    RSSFeed,
+    RSSEntry,
+    fetch_feed,
+    get_all_entries,
+    get_latest_entries,
+    load_feeds,
+    save_feeds,
+)
 
 
 class TestRSSFeed:
@@ -130,3 +138,64 @@ class TestFeedFetching:
         entries = fetch_feed("https://invalid-url.com/rss.xml")
 
         assert entries == []
+
+
+class TestEntryAggregation:
+    """Test entry aggregation across feeds."""
+
+    @patch('second_brain.rss_reader.fetch_feed')
+    @patch('second_brain.rss_reader.load_feeds')
+    def test_get_all_entries_combines_feeds(
+        self,
+        mock_load: MagicMock,
+        mock_fetch: MagicMock,
+    ) -> None:
+        """Test getting all entries from multiple feeds."""
+        # Mock configured feeds
+        mock_load.return_value = [
+            RSSFeed(name="Channel1", url="https://feed1.com/rss.xml", feed_type="youtube"),
+            RSSFeed(name="Channel2", url="https://feed2.com/rss.xml", feed_type="youtube"),
+        ]
+
+        # Mock fetch responses
+        def fetch_side_effect(url: str) -> list[RSSEntry]:
+            if "feed1" in url:
+                return [RSSEntry(
+                    title="Video 1",
+                    link="https://feed1.com/video1",
+                    published=datetime(2026, 3, 29, 10, 0),
+                    source="Channel1",
+                )]
+            else:
+                return [RSSEntry(
+                    title="Video 2",
+                    link="https://feed2.com/video2",
+                    published=datetime(2026, 3, 29, 11, 0),
+                    source="Channel2",
+                )]
+
+        mock_fetch.side_effect = fetch_side_effect
+
+        entries = get_all_entries()
+
+        assert len(entries) == 2
+        # Should be sorted by date (newest first)
+        assert entries[0].title == "Video 2"
+        assert entries[1].title == "Video 1"
+
+    @patch('second_brain.rss_reader.get_all_entries')
+    def test_get_latest_entries_limits_results(self, mock_all: MagicMock) -> None:
+        """Test getting limited latest entries."""
+        # get_all_entries returns entries sorted by date (newest first)
+        # Entry 19 has hour=19 (newest), Entry 0 has hour=0 (oldest)
+        mock_all.return_value = [
+            RSSEntry(title=f"Entry {i}", link=f"https://example.com/{i}",
+                    published=datetime(2026, 3, 29, i, 0), source="Test")
+            for i in range(19, -1, -1)  # Reverse order: newest first
+        ]
+
+        latest = get_latest_entries(n=7)
+
+        assert len(latest) == 7
+        # Should be newest first
+        assert latest[0].title == "Entry 19"

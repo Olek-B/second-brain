@@ -177,3 +177,35 @@ def fetch_feed(url: str) -> list[RSSEntry]:
     except Exception as e:
         log.error("Error fetching feed %s: %s", url, e)
         return []
+
+
+def get_all_entries() -> list[RSSEntry]:
+    """Fetch all entries from all configured feeds.
+
+    Returns:
+        List of all RSSEntry objects, sorted by published date (newest first).
+    """
+    feeds = load_feeds()
+    all_entries: list[RSSEntry] = []
+
+    for feed in feeds:
+        entries = fetch_feed(feed.url)
+        all_entries.extend(entries)
+
+    # Sort by published date (newest first)
+    all_entries.sort(key=lambda e: e.published, reverse=True)
+
+    return all_entries
+
+
+def get_latest_entries(n: int = 7) -> list[RSSEntry]:
+    """Get the N most recent entries from all feeds.
+
+    Args:
+        n: Number of entries to return (default 7).
+
+    Returns:
+        List of N most recent RSSEntry objects.
+    """
+    all_entries = get_all_entries()
+    return all_entries[:n]
