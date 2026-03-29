@@ -200,9 +200,12 @@ Exams are inserted at the top of `todo.md` with a header comment:
 ```
 
 On sync:
-1. Remove all entries under "## Librus Exams"
-2. Insert fresh exam list
-3. Keep manual todos intact
+1. Remove all entries under "## Librus Exams" section
+2. Filter out exams with date < today (auto-remove past exams)
+3. Insert fresh exam list (only future/today exams)
+4. Keep manual todos intact
+
+**Note:** Past exams are silently removed — they don't go to any archive. If you want to keep a history, check `grades.md` which maintains full grade history.
 
 ### Plugin Hooks
 
