@@ -21,10 +21,15 @@ from textual.widgets import (
 )
 
 from . import config
+from .analytics import get_full_analytics, format_analytics_dashboard
+from .rss_reader import load_feeds, get_all_entries
 from .plugins import get_manager
 
 # Pattern to find [[wikilinks]] including [[target|display text]] form.
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+# Pattern to find markdown links: [text](url)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 # Marker that the AI appends to lines it considers deleted.
 # Lines ending with this marker are kept in the file but hidden in the preview.
@@ -50,12 +55,14 @@ def _wikilinks_to_md_links(text: str, valid_files: set[str] | None = None) -> st
 
     External links (no matching file) become Wikipedia links with proper
     URL encoding for special characters (C++, C#, .NET, etc.).
+
+    Also converts markdown [text](url) links to clickable format.
     """
     from urllib.parse import quote
 
     valid_files = valid_files or set()
 
-    def _replace(m: re.Match) -> str:
+    def _replace_wikilink(m: re.Match) -> str:
         target = m.group(1).strip()
         label = (m.group(2) or target).strip()
         target_normalized = target.lower().replace(" ", "_")
@@ -68,7 +75,28 @@ def _wikilinks_to_md_links(text: str, valid_files: set[str] | None = None) -> st
         wikipedia_search = f"https://en.wikipedia.org/wiki/Special:Search?search={quote(target)}"
         return f"[{label}]({wikipedia_search})"
 
-    return _WIKILINK_RE.sub(_replace, text)
+    def _replace_markdown_link(m: re.Match) -> str:
+        label = m.group(1).strip()
+        url = m.group(2).strip()
+
+        # Skip wiki: pseudo-links (already processed)
+        if url.startswith("wiki:"):
+            return f"[{label}]({url})"
+
+        # Validate URL
+        if url.startswith(("http://", "https://")):
+            # Keep as-is, Textual will make it clickable
+            return f"[{label}]({url})"
+
+        # Other protocols (mailto:, tel:, etc.) - keep as-is
+        return f"[{label}]({url})"
+
+    # First convert wikilinks
+    text = _WIKILINK_RE.sub(_replace_wikilink, text)
+    # Then convert markdown links
+    text = _MARKDOWN_LINK_RE.sub(_replace_markdown_link, text)
+
+    return text
 
 
 class FileList(ListView):
@@ -144,7 +172,28 @@ class PreviewPane(Markdown):
                 parsed = urlparse(event.href)
                 query = parse_qs(parsed.query)
                 search_term = query.get("search", ["topic"])[0]
-                self.app.call_from_thread(self._set_status, f"Opening Wikipedia: {search_term}...")  # type: ignore[attr-defined]
+                self.app.call_from_thread(
+                    self._set_status, f"Opening Wikipedia: {search_term}..."
+                )  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            # Let Textual handle opening the browser
+        elif event.href.startswith(("http://", "https://")):
+            # External URL link - show feedback with domain
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(event.href)
+                domain = parsed.netloc or parsed.path.split("/")[0]
+                if domain.startswith("www."):
+                    domain = domain[4:]
+                self.app.call_from_thread(
+                    self._set_status, f"Opening: {domain}"
+                )  # type: ignore[attr-defined]
+
+                # --- Hook: on_external_link_clicked ---
+                pm = get_manager()
+                pm.dispatch_on_external_link_clicked(event.href, domain)
             except Exception:
                 pass
             # Let Textual handle opening the browser
@@ -223,7 +272,8 @@ class BrainApp(App):
         Binding("g", "view_graph", "Refresh Graph"),
         Binding("p", "process_dump", "Process Dump"),
         Binding("j", "run_janitor", "Janitor"),
-        Binding("r", "refresh_list", "Refresh List"),
+        Binding("R", "refresh_list", "Refresh List"),
+        Binding("r", "view_rss", "RSS Feeds"),
         Binding("d", "open_dump", "Edit Dump"),
         Binding("t", "pull_telegram", "Pull Telegram"),
         Binding("T", "view_todos", "View Todos"),
@@ -231,6 +281,9 @@ class BrainApp(App):
         Binding("#", "view_tags", "View Tags"),
         Binding("D", "view_duplicates", "View Duplicates"),
         Binding("a", "ask_brain", "Ask Brain"),
+        Binding("i", "view_investments", "View Investments"),
+        Binding("I", "refresh_investments", "Refresh Investments"),
+        Binding("A", "view_analytics", "Analytics"),
     ]
 
     def __init__(self):
@@ -418,21 +471,49 @@ class BrainApp(App):
             pm = get_manager()
             content = pm.dispatch_on_file_preview(fname, content)
 
-            # Add tags section
+            # Add backlinks section at TOP (after title, before main content)
+            from .backlinks import get_backlinks_for_tui
+
+            backlinks_md, _ = get_backlinks_for_tui(fname)
+            if backlinks_md:
+                # Insert backlinks after the first line (title) or at the very top
+                lines = content.splitlines()
+                insert_at = 0
+
+                # Skip frontmatter if present
+                if lines and lines[0].strip() == "---":
+                    insert_at = 1
+                    while insert_at < len(lines) and lines[insert_at].strip() != "---":
+                        insert_at += 1
+                    insert_at += 1
+
+                # Skip blank lines
+                while insert_at < len(lines) and lines[insert_at].strip() == "":
+                    insert_at += 1
+
+                # Skip title line
+                if insert_at < len(lines) and lines[insert_at].startswith("#"):
+                    insert_at += 1
+                    # Skip blank lines after title
+                    while insert_at < len(lines) and lines[insert_at].strip() == "":
+                        insert_at += 1
+
+                # Insert backlinks
+                if insert_at > 0:
+                    backlinks_md = "\n" + backlinks_md
+                if insert_at < len(lines):
+                    backlinks_md = backlinks_md + "\n"
+
+                lines = lines[:insert_at] + [backlinks_md] + lines[insert_at:]
+                content = "\n".join(lines)
+
+            # Add tags section at bottom
             from .tags import get_tags_by_file
 
             tags = get_tags_by_file(fname)
             if tags:
                 content += "\n\n---\n\n**Tags:** "
                 content += ", ".join(f"#{t}" for t in sorted(tags))
-
-            # Add backlinks section
-            from .graph import get_backlinks
-
-            backlinks = get_backlinks(fname)
-            if backlinks:
-                content += "\n\n---\n\n**Backlinks:** "
-                content += ", ".join(f"[[{bl.removesuffix('.md')}]]" for bl in sorted(backlinks))
 
             preview.set_content(content)
         else:
@@ -729,6 +810,211 @@ class BrainApp(App):
 
         preview.set_content(content)
         self._set_status(f" Found {len(duplicates)} potential duplicate pairs")
+
+    def action_view_investments(self) -> None:
+        """Show investment portfolio in the preview pane."""
+        from .investments import get_portfolio_summary, load_investments
+
+        title = self.query_one("#preview-title", Static)
+        preview = self.query_one("#preview", PreviewPane)
+
+        title.update(" Investment Portfolio")
+
+        investments = load_investments()
+        summary = get_portfolio_summary()
+
+        if not investments:
+            preview.set_content(
+                "*No investments tracked yet.*\n\n"
+                "Add investments using the CLI:\n"
+                "```\n"
+                "second-brain invest \"{ale} allegro - 3 - 25.50\"\n"
+                "```\n\n"
+                "Format: `{ticker} name - shares [- buy_price]`\n\n"
+                "The buy price is used to calculate your gain/loss."
+            )
+            self._set_status(" No investments tracked")
+            return
+
+        # Build markdown investment report
+        content = "## Investment Portfolio\n\n"
+
+        # Summary
+        total_gain_loss = sum(
+            (inv.gain_loss or 0) for inv in investments if inv.current_price
+        )
+        content += "**Portfolio Summary:**\n"
+        content += f"- **Total Value:** {summary['total_value']:.2f} PLN\n"
+        gain_loss_sign = "+" if total_gain_loss >= 0 else ""
+        content += f"- **Total Gain/Loss:** {gain_loss_sign}{total_gain_loss:.2f} PLN\n"
+        content += f"- **Positions:** {summary['invested_count']}/{summary['total_count']} with current prices\n"
+        if summary["last_updated"]:
+            content += f"- **Last Updated:** {summary['last_updated'].strftime('%Y-%m-%d %H:%M')}\n"
+        content += "\n---\n\n"
+
+        # Table header
+        content += "| Ticker | Name | Shares | Buy Price | Current | Gain/Loss | Value |\n"
+        content += "|--------|------|--------|-----------|---------|-----------|-------|\n"
+
+        # Rows
+        for inv in investments:
+            if inv.current_price:
+                buy_str = f"{inv.buy_price:.2f} {inv.currency}"
+                price_str = f"{inv.current_price:.2f} {inv.currency}"
+                value_str = f"{inv.market_value:.2f} {inv.currency}"
+                gain_loss = inv.gain_loss
+                gain_loss_pct = inv.gain_loss_pct
+                if gain_loss is not None and gain_loss_pct is not None:
+                    sign = "+" if gain_loss >= 0 else ""
+                    gain_str = f"{sign}{gain_loss:.2f} ({sign}{gain_loss_pct:.1f}%)"
+                else:
+                    gain_str = "N/A"
+            else:
+                buy_str = f"{inv.buy_price:.2f} {inv.currency}" if inv.buy_price > 0 else "N/A"
+                price_str = "N/A"
+                value_str = "N/A"
+                gain_str = "N/A"
+
+            content += f"| {inv.ticker} | {inv.name} | {inv.shares} | {buy_str} | {price_str} | {gain_str} | {value_str} |\n"
+
+        content += "\n*Data fetched from Stooq.com. Press `I` to refresh prices*"
+
+        preview.set_content(content)
+        self._set_status(f" Showing {len(investments)} investments")
+
+    def action_view_rss(self) -> None:
+        """Show RSS feed browser in the preview pane."""
+        title = self.query_one("#preview-title", Static)
+        preview = self.query_one("#preview", PreviewPane)
+        
+        title.update("📰 RSS Feed Reader")
+        self._set_status(" Loading feeds...")
+        
+        feeds = load_feeds()
+        
+        if not feeds:
+            preview.set_content(
+                "*No RSS feeds configured.*\n\n"
+                "Add feeds using the CLI:\n"
+                "```\n"
+                "second-brain rss --add \"Channel Name\" \"https://youtube.com/feeds/videos.xml?channel_id=XXX\"\n"
+                "```\n\n"
+                "Or edit `rss.md` in your brain directory directly."
+            )
+            self._set_status(" No feeds configured")
+            return
+        
+        # Build markdown feed browser
+        content = "## Configured Feeds\n\n"
+        
+        for feed in feeds:
+            content += f"### {feed.name} ({feed.feed_type})\n"
+            content += f"URL: `{feed.url}`\n\n"
+        
+        content += "---\n\n"
+        content += "## Latest Entries\n\n"
+        
+        entries = get_all_entries()
+        
+        if entries:
+            for entry in entries[:20]:  # Show 20 most recent
+                time_str = entry.published.strftime("%Y-%m-%d %H:%M")
+                content += f"### [{entry.title}]({entry.link})\n\n"
+                content += f"*{time_str} • {entry.source}*\n\n"
+                if entry.summary:
+                    content += f"{entry.summary}\n\n"
+                content += "---\n\n"
+        else:
+            content += "*No entries fetched yet. Press `R` to refresh.*\n"
+        
+        content += "\n*Tip: Click any link to open in browser. Press `R` to refresh feeds.*"
+        
+        preview.set_content(content)
+        self._set_status(f" Showing {len(feeds)} feeds, {len(entries)} entries")
+
+    def action_view_analytics(self) -> None:
+        """Show personal analytics dashboard in the preview pane."""
+        title = self.query_one("#preview-title", Static)
+        preview = self.query_one("#preview", PreviewPane)
+
+        title.update("📊 Analytics Dashboard")
+        self._set_status(" Generating analytics...")
+
+        try:
+            data = get_full_analytics(days=30)
+            dashboard = format_analytics_dashboard(data)
+            preview.set_content(dashboard)
+            self._set_status(" Analytics dashboard displayed")
+        except Exception as e:
+            self._set_status(f" Analytics error: {e}")
+
+    @work(thread=True)
+    def _do_refresh_investments(self) -> None:
+        """Run investment refresh in a background thread."""
+        self.app.call_from_thread(self._set_status, " Refreshing investment prices from Stooq...")
+
+        try:
+            from .investments import (
+                get_portfolio_summary,
+                load_investments,
+                refresh_all_investments,
+            )
+
+            updated = refresh_all_investments()
+            summary = get_portfolio_summary()
+
+            # Update the view with fresh data
+            title = self.query_one("#preview-title", Static)
+            preview = self.query_one("#preview", PreviewPane)
+
+            self.app.call_from_thread(title.update, " Investment Portfolio")
+
+            # Load fresh data
+            investments_list = load_investments()
+            content = "## Investment Portfolio (Updated)\n\n"
+            content += "**Portfolio Summary:**\n"
+            content += f"- **Total Value:** {summary['total_value']:.2f} PLN\n"
+            total_gain_loss = sum(
+                (inv.gain_loss or 0) for inv in investments_list if inv.current_price
+            )
+            gain_loss_sign = "+" if total_gain_loss >= 0 else ""
+            content += f"- **Total Gain/Loss:** {gain_loss_sign}{total_gain_loss:.2f} PLN\n"
+            content += f"- **Positions:** {summary['invested_count']}/{summary['total_count']} with current prices\n"
+            content += "\n---\n\n"
+            content += "| Ticker | Name | Shares | Buy Price | Current | Gain/Loss | Value |\n"
+            content += "|--------|------|--------|-----------|---------|-----------|-------|\n"
+
+            for inv in investments_list:
+                if inv.current_price:
+                    buy_str = f"{inv.buy_price:.2f} {inv.currency}"
+                    price_str = f"{inv.current_price:.2f} {inv.currency}"
+                    value_str = f"{inv.market_value:.2f} {inv.currency}"
+                    gain_loss = inv.gain_loss
+                    gain_loss_pct = inv.gain_loss_pct
+                    if gain_loss is not None and gain_loss_pct is not None:
+                        sign = "+" if gain_loss >= 0 else ""
+                        gain_str = f"{sign}{gain_loss:.2f} ({sign}{gain_loss_pct:.1f}%)"
+                    else:
+                        gain_str = "N/A"
+                else:
+                    buy_str = f"{inv.buy_price:.2f} {inv.currency}" if inv.buy_price > 0 else "N/A"
+                    price_str = "N/A"
+                    value_str = "N/A"
+                    gain_str = "N/A"
+
+                content += f"| {inv.ticker} | {inv.name} | {inv.shares} | {buy_str} | {price_str} | {gain_str} | {value_str} |\n"
+
+            content += f"\n*Just refreshed {len(updated)} investments from Stooq.com*"
+
+            self.app.call_from_thread(preview.set_content, content)
+            self.app.call_from_thread(self._set_status, f" Refreshed {len(updated)} investments")
+
+        except Exception as e:
+            self.app.call_from_thread(self._set_status, f" Refresh error: {e}")
+
+    def action_refresh_investments(self) -> None:
+        """Refresh all investment prices from Stooq."""
+        self._do_refresh_investments()
 
     @on(Input.Submitted, "#ask-input")
     def _on_ask_submitted(self, event: Input.Submitted) -> None:
