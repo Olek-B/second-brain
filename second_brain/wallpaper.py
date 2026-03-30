@@ -295,13 +295,13 @@ def render_rss_overlay(output_path: Path | None = None) -> Path | None:
     panel_h = int(height * 0.3)  # 30% of screen height
     pad_x = 20
     pad_y = 40
-    line_height = 20
+    line_height = 18  # Slightly tighter for two-line entries
     title_size = 14
     item_size = 10
     header_height = 35
 
-    # Limit items to what fits on screen
-    max_items = (panel_h - pad_y * 2 - header_height) // line_height
+    # Limit items to what fits on screen (each entry takes 2 lines)
+    max_items = (panel_h - pad_y * 2 - header_height) // (line_height * 2 - 4)
     display_items = entries[:max_items]
     remaining = len(entries) - len(display_items)
 
@@ -345,13 +345,15 @@ def render_rss_overlay(output_path: Path | None = None) -> Path | None:
         "  RSS Feed",
     ]
 
-    # Draw each RSS entry
+    # Draw each RSS entry (title + source on separate lines)
     y = pad_y + header_height
     for entry in display_items:
         # Truncate long titles
-        title = entry.title[:45] + "..." if len(entry.title) > 45 else entry.title
-        line_text = f"• {title}"
+        title = entry.title[:40] + "..." if len(entry.title) > 40 else entry.title
+        source = entry.source[:30]  # Truncate source if needed
 
+        # Draw title line
+        line_text = f"• {title}"
         magick_args.extend(
             [
                 "-fill",
@@ -363,7 +365,22 @@ def render_rss_overlay(output_path: Path | None = None) -> Path | None:
                 line_text,
             ]
         )
-        y += line_height
+        y += line_height - 2  # Slightly tighter spacing
+
+        # Draw source line (indented)
+        source_text = f"    [{source}]"
+        magick_args.extend(
+            [
+                "-fill",
+                f"{fg}AA",
+                "-pointsize",
+                str(item_size - 1),
+                "-annotate",
+                f"+{pad_x}+{y}",
+                source_text,
+            ]
+        )
+        y += line_height - 2
 
     # Show remaining count if truncated
     if remaining > 0:
