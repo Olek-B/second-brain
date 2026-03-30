@@ -102,7 +102,7 @@ class TestParseTodos:
 class TestRSSOverlay:
     """Test RSS wallpaper overlay rendering."""
 
-    @patch("second_brain.wallpaper.get_latest_entries")
+    @patch("second_brain.wallpaper.overlays.get_latest_entries")
     def test_render_rss_overlay_creates_file(self, mock_get: MagicMock, tmp_path: Path) -> None:
         """Test RSS overlay creates PNG file."""
         from second_brain.rss_reader import RSSEntry
@@ -125,7 +125,7 @@ class TestRSSOverlay:
         assert result.exists()
         assert result == output_path
 
-    @patch("second_brain.wallpaper.get_latest_entries")
+    @patch("second_brain.wallpaper.overlays.get_latest_entries")
     def test_render_rss_overlay_returns_none_when_empty(
         self, mock_get: MagicMock, tmp_path: Path
     ) -> None:
