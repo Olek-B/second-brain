@@ -6,17 +6,98 @@ import tempfile
 from pathlib import Path
 
 from . import config
+from .external_links import scan_external_links_for_graph
 from .plugins import get_manager
 
 
-def scan_brain() -> tuple[list[str], list[tuple[str, str]], list[str]]:
+def normalize_wikilinks(content: str, valid_names: set[str] | None = None) -> str:
+    """Normalize wikilinks in content to consistent format.
+
+    Converts [[text|Label]] to [[text]] when the link text matches
+    the target file name (case-insensitive), keeping the simpler form.
+
+    Args:
+        content: Markdown content to normalize.
+        valid_names: Set of valid file names (without .md). If None,
+            normalizes all links; if provided, only normalizes links
+            to existing files.
+
+    Returns:
+        Content with normalized wikilinks.
+    """
+    # Pattern matches [[target]] or [[target|label]]
+    link_pattern = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+    def replace_link(match: re.Match) -> str:
+        target = match.group(1).strip()
+        label = match.group(2)
+
+        # If there's no label, keep as-is
+        if label is None:
+            return f"[[{target}]]"
+
+        # If valid_names is provided, only normalize links to existing files
+        if valid_names is not None and target not in valid_names:
+            # Keep external links as-is
+            return f"[[{target}|{label}]]"
+
+        # Normalize: if label matches target (case-insensitive), use simple form
+        # This handles both [[vercel|Vercel]] -> [[vercel]] and [[Vercel|vercel]] -> [[vercel]]
+        if label.lower() == target.lower():
+            # Use lowercase for consistency
+            return f"[[{target.lower()}]]"
+
+        # Keep the labeled form when they differ
+        return f"[[{target}|{label}]]"
+
+    return link_pattern.sub(replace_link, content)
+
+
+def get_existing_wikilinks(brain_dir: Path | None = None) -> tuple[set[str], list[str]]:
+    """Get list of existing wikilinks (both internal and external).
+
+    Args:
+        brain_dir: Path to brain directory. Defaults to config.BRAIN_DIR.
+
+    Returns:
+        Tuple of (internal_files, external_topics) where internal_files
+        are .md file stems and external_topics are wiki links that don't
+        match any internal file.
+    """
+    if brain_dir is None:
+        brain_dir = config.BRAIN_DIR
+
+    md_files = sorted(brain_dir.glob("*.md"))
+    # Exclude dump.md from internal files
+    internal_files = {f.stem for f in md_files if f.name != "dump.md"}
+
+    # Scan all files for external wiki links
+    link_pattern = re.compile(r"\[\[([^\]]+)\]\]")
+    external_topics: set[str] = set()
+
+    for md_file in md_files:
+        if md_file.name == "dump.md":
+            continue
+        content = md_file.read_text()
+        for match in link_pattern.finditer(content):
+            target = match.group(1).strip()
+            if target.endswith(".md"):
+                target = target[:-3]
+            if target not in internal_files:
+                external_topics.add(target)
+
+    return internal_files, sorted(external_topics)
+
+
+def scan_brain() -> tuple[list[str], list[tuple[str, str]], list[str], list[dict]]:
     """Scan the brain directory for nodes and edges.
 
     Returns:
-        (nodes, edges, external_nodes) where nodes are filenames (without .md),
-        edges are (source, target) tuples based on [[wikilinks]] (including
-        edges to external Wikipedia topics), and external_nodes are wiki links
-        that don't match internal files (potential Wikipedia topics).
+        (nodes, edges, external_nodes, external_links) where:
+        - nodes: filenames (without .md)
+        - edges: (source, target) tuples based on [[wikilinks]]
+        - external_nodes: wiki links without matching files
+        - external_links: list of dicts with external URL node data
     """
     pm = get_manager()
 
@@ -54,38 +135,17 @@ def scan_brain() -> tuple[list[str], list[tuple[str, str]], list[str]]:
     # Deduplicate edges
     edges = list(set(edges))
 
+    # Scan for external URL links
+    external_link_nodes, external_edges = scan_external_links_for_graph(brain_dir)
+    edges.extend(external_edges)
+
     # --- Hook: after_scan_brain (mutating) ---
     nodes, edges = pm.dispatch_after_scan_brain(nodes, edges)
 
     # --- Hook: after_scan_brain_external (mutating) ---
     external_nodes = pm.dispatch_after_scan_brain_external(external_nodes)
 
-    return nodes, edges, list(external_nodes)
-
-
-def get_backlinks(target_file: str) -> list[str]:
-    """Find all files that link to the given target file.
-
-    Args:
-        target_file: Filename (with or without .md extension)
-
-    Returns:
-        List of filenames that contain wiki links to the target.
-    """
-    brain_dir = config.BRAIN_DIR
-    target = target_file.removesuffix(".md")
-    backlinks: list[str] = []
-    # Pattern matches [[target]] or [[target|label]]
-    link_pattern = re.compile(rf"\[\[({re.escape(target)})(?:\|[^\]]+)?\]\]", re.IGNORECASE)
-
-    for md_file in brain_dir.glob("*.md"):
-        if md_file.name == "dump.md":
-            continue
-        content = md_file.read_text()
-        if link_pattern.search(content):
-            backlinks.append(md_file.name)
-
-    return backlinks
+    return nodes, edges, list(external_nodes), external_link_nodes
 
 
 def check_links() -> dict:
@@ -176,7 +236,10 @@ def _luminance(hex_color: str) -> float:
 
 
 def generate_dot(
-    nodes: list[str], edges: list[tuple[str, str]], external_nodes: list[str] | None = None
+    nodes: list[str],
+    edges: list[tuple[str, str]],
+    external_nodes: list[str] | None = None,
+    external_link_nodes: list[dict] | None = None,
 ) -> str:
     """Generate a Graphviz DOT string with pywal-themed styling.
 
@@ -185,10 +248,13 @@ def generate_dot(
 
     External nodes (wiki links without matching files) are shown with
     a different style to indicate they link to Wikipedia.
+
+    External link nodes (URLs) are shown as small squares with favicons.
     """
     pm = get_manager()
 
     external_nodes = external_nodes or []
+    external_link_nodes = external_link_nodes or []
 
     # --- Hook: before_generate_dot ---
     pm.dispatch_before_generate_dot(nodes, edges)
@@ -283,6 +349,41 @@ def generate_dot(
             dot_lines.append(f'  "{ext_node}" [{attr_str}]')
         dot_lines.append("")
 
+    # Add external link nodes (URLs) with favicons
+    if external_link_nodes:
+        dot_lines.append("  // External link nodes (URLs)")
+        for ext_link in external_link_nodes:
+            node_id = ext_link["id"]
+            label = ext_link["label"]
+            favicon_path = ext_link.get("favicon")
+
+            # External link nodes: square shape, smaller, with favicon image
+            node_attrs = {
+                "label": label,
+                "shape": "square",
+                "fillcolor": "#ffffff10",
+                "color": colors["fg"],
+                "fontcolor": colors["fg"],
+                "style": "filled,bold",
+                "penwidth": "1.5",
+                "width": "0.8",
+                "height": "0.8",
+                "fontsize": "9",
+            }
+
+            # Add favicon as image if available
+            if favicon_path and favicon_path.exists():
+                node_attrs["image"] = str(favicon_path)
+                node_attrs["imagepos"] = "tc"  # image at top center
+                node_attrs["labelloc"] = "b"  # label at bottom
+
+            # --- Hook: on_dot_external_link_node (mutating) ---
+            node_attrs = pm.dispatch_on_dot_external_link_node(ext_link, node_attrs)
+
+            attr_str = " ".join(f'{k}="{v}"' for k, v in node_attrs.items())
+            dot_lines.append(f'  "{node_id}" [{attr_str}]')
+        dot_lines.append("")
+
     # Add edges
     for src, tgt in edges:
         # Base edge attributes (empty — uses global defaults)
@@ -316,15 +417,16 @@ def render_graph(output_path: Path | None = None) -> Path:
     if output_path is None:
         output_path = config.GRAPH_OUTPUT
 
-    nodes, edges, external_nodes = scan_brain()
+    nodes, edges, external_nodes, external_link_nodes = scan_brain()
 
     if not nodes:
         # Create a placeholder node
         nodes = ["empty_brain"]
         edges = []
         external_nodes = []
+        external_link_nodes = []
 
-    dot_source = generate_dot(nodes, edges, external_nodes)
+    dot_source = generate_dot(nodes, edges, external_nodes, external_link_nodes)
 
     # --- Hook: before_render_graph (mutating) ---
     dot_source = pm.dispatch_before_render_graph(dot_source)

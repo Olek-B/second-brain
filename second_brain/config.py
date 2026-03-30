@@ -752,3 +752,28 @@ def get_plugin_config(plugin_name: str) -> dict[str, Any]:
     if cfg and isinstance(cfg, dict):
         return cfg
     return {}
+
+
+# ---------------------------------------------------------------------------
+# Backlinks config
+# ---------------------------------------------------------------------------
+
+
+def get_backlinks_header() -> str:
+    """Get the header text for backlinks section."""
+    header = _get("backlinks.header")
+    if header and isinstance(header, str):
+        return header
+    return "## Backlinks"
+
+
+def get_backlinks_inject_to_files() -> bool:
+    """Check if backlinks should be physically injected into files.
+
+    If False (default), backlinks are shown dynamically only (TUI, CLI).
+    If True, backlinks are written to the actual markdown files.
+    """
+    inject = _get("backlinks.inject_to_files")
+    if inject is not None:
+        return bool(inject)
+    return False

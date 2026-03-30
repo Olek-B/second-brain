@@ -19,6 +19,7 @@ from datetime import datetime
 from groq import Groq
 
 from . import config
+from .external_links import extract_domain, get_domain_display_name
 from .plugins import get_manager
 from .prompts import (
     PLAN_SYSTEM_PROMPT,
@@ -29,6 +30,42 @@ from .prompts import (
 # Marker appended to lines the AI marks for soft-deletion.
 # The TUI renderer hides these lines but they remain in the file on disk.
 DELETE_MARKER = "<!-- DELETE -->"
+
+# Pre-compiled URL pattern for performance
+_URL_PATTERN = re.compile(
+    r'(?<!\]\()'  # Not preceded by ](
+    r'(?<!\[)'    # Not preceded by [
+    r'(https?://[^\s<>"{}|\\^`\[\]]+)'  # URL pattern
+    r'(?!\))'     # Not followed by )
+)
+
+
+def _format_urls_as_markdown(text: str) -> str:
+    """Convert raw URLs in text to markdown links.
+
+    Finds standalone URLs (not already in markdown link syntax) and
+    converts them to [domain](url) format for better readability.
+
+    Args:
+        text: Raw text that may contain URLs.
+
+    Returns:
+        Text with URLs converted to markdown links.
+    """
+
+    def replace_url(match: re.Match) -> str:
+        url = match.group(1)
+        # Clean trailing punctuation that's not part of URL
+        while url and url[-1] in '.,;:!?)':
+            url = url[:-1]
+        trailing = match.group(0)[len(url):]
+
+        domain = extract_domain(url)
+        display_name = get_domain_display_name(domain)
+
+        return f"[{display_name}]({url}){trailing}"
+
+    return _URL_PATTERN.sub(replace_url, text)
 
 
 def _build_review_user_prompt(excerpt: str, writer_output: str) -> str:
@@ -341,6 +378,9 @@ def process_dump(dump_text: str | None = None) -> dict:
 
     # --- Hook: before_process_dump (mutating) ---
     dump_text = pm.dispatch_before_process_dump(dump_text)
+
+    # Auto-format raw URLs as markdown links
+    dump_text = _format_urls_as_markdown(dump_text)
 
     existing_files = config.get_brain_files()
     api_key = config.get_groq_api_key()

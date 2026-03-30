@@ -13,6 +13,7 @@ from pathlib import Path
 from groq import Groq
 
 from . import config
+from .graph import get_existing_wikilinks, normalize_wikilinks
 from .librarian import _repair_json
 from .plugins import get_manager
 from .prompts import JANITOR_PROMPT
@@ -25,11 +26,24 @@ _MAX_BATCH_TOKENS = 28000
 def _build_janitor_input(
     files: dict[str, str],
     file_list: list[str],
+    internal_files: set[str],
+    external_topics: list[str],
 ) -> str:
-    """Build the user prompt with file contents for a batch."""
+    """Build the user prompt with file contents for a batch.
+    
+    Args:
+        files: All brain files {filename: content}.
+        file_list: All filenames (for the header / wikilink list).
+        internal_files: Set of existing file stems (for wikilink awareness).
+        external_topics: List of external wiki topics (for Wikipedia links).
+    """
     parts = [
         "## All files in knowledge base:",
         ", ".join(file_list),
+        "",
+        "## Existing wikilinks you can use:",
+        "Internal files: " + ", ".join(sorted(internal_files)),
+        "External topics (Wikipedia): " + ", ".join(external_topics) if external_topics else "External topics (Wikipedia): none",
         "",
     ]
 
@@ -51,6 +65,8 @@ def _estimate_tokens(text: str) -> int:
 def _build_batches(
     files: dict[str, str],
     file_list: list[str],
+    internal_files: set[str],
+    external_topics: list[str],
     max_tokens: int = _MAX_BATCH_TOKENS,
 ) -> list[dict[str, str]]:
     """Split files into batches that fit within the token budget.
@@ -62,13 +78,22 @@ def _build_batches(
     Args:
         files: All brain files {filename: content}.
         file_list: All filenames (for the header / wikilink list).
+        internal_files: Set of existing file stems (for wikilink awareness).
+        external_topics: List of external wiki topics (for Wikipedia links).
         max_tokens: Maximum estimated tokens per batch.
 
     Returns:
         List of file dicts, one per batch.
     """
-    # Fixed overhead: system prompt + file list header
-    header = "## All files in knowledge base:\n" + ", ".join(file_list) + "\n"
+    # Fixed overhead: system prompt + file list header + wikilink lists
+    header = (
+        "## All files in knowledge base:\n"
+        + ", ".join(file_list)
+        + "\n## Existing wikilinks you can use:\n"
+        + "Internal files: " + ", ".join(sorted(internal_files))
+        + "\nExternal topics (Wikipedia): " + (", ".join(external_topics) if external_topics else "none")
+        + "\n"
+    )
     overhead = _estimate_tokens(JANITOR_PROMPT + header)
 
     budget = max_tokens - overhead
@@ -104,11 +129,19 @@ def _apply_changes(
     brain_dir: Path,
     dry_run: bool,
     pm,
+    internal_files: set[str],
 ) -> list[str]:
     """Apply a list of janitor changes, returning summary strings.
 
     This is the safety-valve + write logic extracted so it can be reused
     for each batch.
+    
+    Args:
+        changes: List of change dicts from the LLM.
+        brain_dir: Path to brain directory.
+        dry_run: If True, don't write files.
+        pm: Plugin manager.
+        internal_files: Set of existing file stems for link normalization.
     """
     summaries: list[str] = []
 
@@ -127,6 +160,9 @@ def _apply_changes(
             continue
 
         old_content = fpath.read_text()
+
+        # Normalize wikilinks in the new content
+        new_content = normalize_wikilinks(new_content, internal_files)
 
         # Check what actually changed
         if old_content.strip() == new_content.strip():
@@ -206,6 +242,9 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     if not file_list:
         return ["No files to clean."]
 
+    # Get existing wikilinks for the AI to reference
+    internal_files, external_topics = get_existing_wikilinks(brain_dir)
+
     # Read all files
     files: dict[str, str] = {}
     for fname in file_list:
@@ -216,9 +255,11 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     pm.dispatch_before_janitor_run(files)
 
     # Split into batches
-    batches = _build_batches(files, file_list)
+    batches = _build_batches(files, file_list, internal_files, external_topics)
 
-    total_tokens = _estimate_tokens(JANITOR_PROMPT + _build_janitor_input(files, file_list))
+    total_tokens = _estimate_tokens(
+        JANITOR_PROMPT + _build_janitor_input(files, file_list, internal_files, external_topics)
+    )
 
     summaries: list[str] = []
     summaries.append(
@@ -233,7 +274,7 @@ def run_janitor(dry_run: bool = False) -> list[str]:
     for batch_idx, batch_files in enumerate(batches, 1):
         batch_label = f"[batch {batch_idx}/{len(batches)}] " if len(batches) > 1 else ""
 
-        user_input = _build_janitor_input(batch_files, file_list)
+        user_input = _build_janitor_input(batch_files, file_list, internal_files, external_topics)
 
         response = client.chat.completions.create(
             model=config.GROQ_MODEL,
@@ -272,7 +313,7 @@ def run_janitor(dry_run: bool = False) -> list[str]:
             continue
 
         any_changes = True
-        batch_summaries = _apply_changes(changes, brain_dir, dry_run, pm)
+        batch_summaries = _apply_changes(changes, brain_dir, dry_run, pm, internal_files)
         for s in batch_summaries:
             summaries.append(f"{batch_label}{s}")
 

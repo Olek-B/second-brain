@@ -135,6 +135,35 @@ class SecondBrainPlugin:
         """Observational: called after the AI answers a question."""
         pass
 
+    # -- backlinks hooks ----------------------------------------------------
+
+    def before_inject_backlinks(
+        self,
+        fname: str,
+        backlinks_section: str,
+        backlinks: list[str],
+    ) -> str | None:
+        """Mutating: transform backlinks section before injecting into file.
+
+        Args:
+            fname: Filename being processed
+            backlinks_section: Formatted markdown section with backlinks
+            backlinks: List of filenames that link to this file
+
+        Returns:
+            Modified backlinks section or None to keep unchanged
+        """
+        return None
+
+    def after_inject_backlinks(self, fname: str, content: str) -> None:
+        """Observational: called after backlinks are injected into content.
+
+        Args:
+            fname: Filename that was processed
+            content: Full file content with backlinks injected
+        """
+        pass
+
     # -- graph hooks --------------------------------------------------------
 
     def before_scan_brain(self) -> None:
@@ -179,6 +208,22 @@ class SecondBrainPlugin:
 
     def on_dot_external_node(self, node: str, attrs: dict) -> dict | None:
         """Mutating: customize DOT attributes for external (Wikipedia) node."""
+        return None
+
+    def on_dot_external_link_node(
+        self,
+        link_data: dict,
+        attrs: dict,
+    ) -> dict | None:
+        """Mutating: customize DOT attributes for external URL link node.
+
+        Args:
+            link_data: Dict with link info (id, url, domain, label, favicon, sources)
+            attrs: DOT node attributes dict
+
+        Returns:
+            Modified attrs dict or None to keep unchanged
+        """
         return None
 
     def after_generate_dot(self, dot_source: str) -> str | None:
@@ -247,6 +292,19 @@ class SecondBrainPlugin:
 
     def after_refresh_wallpaper(self, result: str) -> None:
         """Observational: called after wallpaper refresh completes."""
+        pass
+
+    # -- investments overlay hooks -----------------------------------------
+
+    def before_render_investments_overlay(
+        self,
+        inv_data: dict,
+    ) -> None:
+        """Observational: called before rendering investments overlay."""
+        pass
+
+    def after_render_investments_overlay(self, output_path: Path | None) -> None:
+        """Observational: called after investments overlay is rendered."""
         pass
 
     # -- daily notes hooks --------------------------------------------------
@@ -357,6 +415,15 @@ class SecondBrainPlugin:
 
     def on_wikilink_clicked(self, target: str) -> None:
         """Observational: called when a wikilink is clicked in the TUI."""
+        pass
+
+    def on_external_link_clicked(self, url: str, domain: str) -> None:
+        """Observational: called when an external URL link is clicked in the TUI.
+
+        Args:
+            url: The full URL that was clicked
+            domain: The domain name extracted from the URL
+        """
         pass
 
     def before_tui_process_dump(self) -> None:

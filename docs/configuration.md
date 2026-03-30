@@ -113,9 +113,38 @@ Cache files are stored in `$XDG_CACHE_HOME/second_brain/`:
 ~/Documents/brain/
   dump.md          -- raw thoughts input (cleared after processing)
   todo.md          -- extracted tasks (auto-generated)
+  investments.md   -- investment holdings with current prices (auto-generated)
+  YYYY-MM-DD.md    -- daily notes (created on demand)
   *.md             -- knowledge base files (created by librarian)
   .janitor_log     -- janitor run history
 ```
 
 Files named `dump.md` are excluded from the file list and graph.
 All other `.md` files are treated as knowledge base entries.
+
+## Plugin Configuration
+
+Plugins can be configured in the `plugins.config` section of `config.json`:
+
+```json
+{
+  "plugins": {
+    "config": {
+      "telegram_pull": {
+        "remote_url": "https://your-server.com/pull",
+        "pull_secret": "your-secret-key"
+      }
+    }
+  }
+}
+```
+
+### Telegram Pull Plugin
+
+| Key           | Type   | Description                                    |
+|---------------|--------|------------------------------------------------|
+| `remote_url`  | string | URL of the remote Telegram pull server         |
+| `pull_secret` | string | Secret key for authentication                  |
+
+Used by the `pull`, `sync`, and `boot-sync` commands to sync messages between
+Telegram and your brain.
