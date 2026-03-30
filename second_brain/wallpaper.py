@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import config
 from .plugins import get_manager
-from .rss_reader import RSSEntry, get_latest_entries
+from .rss_reader import get_latest_entries
 
 log = logging.getLogger("second_brain.wallpaper")
 
@@ -106,7 +106,7 @@ def render_investments_overlay(output_path: Path | None = None) -> Path | None:
     # Get colors with proper fallbacks
     fg = colors.get("color15", "#ebdbb2") or "#ebdbb2"
     bg = colors.get("color0", "#1d2021") or "#1d2021"
-    
+
     # Find a good accent color from available colors
     accent = None
     for key in ("color10", "color11", "color12", "color4", "color6", "color3"):
@@ -136,9 +136,7 @@ def render_investments_overlay(output_path: Path | None = None) -> Path | None:
 
     # Semi-transparent dark background panel with rounded corners
     draw_cmds.append(
-        f"roundrectangle {pad_x - 10},{pad_y - 10} "
-        f"{panel_w - 20},{panel_h - 20} "
-        f"10,10"
+        f"roundrectangle {pad_x - 10},{pad_y - 10} {panel_w - 20},{panel_h - 20} 10,10"
     )
 
     magick_args = [
@@ -190,12 +188,12 @@ def render_investments_overlay(output_path: Path | None = None) -> Path | None:
         price = inv["price"]
         currency = inv.get("currency", "PLN")
         buy_price = inv.get("buy_price", 0)
-        
+
         # Calculate gain/loss
         gain_loss = (price - buy_price) * shares if buy_price > 0 else 0
         gain_loss_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
         gain_sign = "+" if gain_loss >= 0 else ""
-        
+
         # Format: TICKER  value  (+/-X%)
         line_text = f"  {ticker:<6} {value:.0f} {currency}  ({gain_sign}{gain_loss_pct:.1f}%)"
 
@@ -245,7 +243,10 @@ def render_investments_overlay(output_path: Path | None = None) -> Path | None:
 def render_rss_overlay(output_path: Path | None = None) -> Path | None:
     """Render RSS feed entries as a transparent PNG for the wallpaper.
 
-    Shows the latest 5-7 entries from all feeds.
+    Shows the latest 5-7 entries from all feeds on a styled panel
+    matching the todo panel aesthetic (semi-transparent background,
+    rounded corners, accent stroke).
+
     Returns the path to the overlay PNG, or None if no entries.
 
     Args:
@@ -271,62 +272,118 @@ def render_rss_overlay(output_path: Path | None = None) -> Path | None:
     pm.dispatch_before_render_rss_overlay(entries)
 
     width, height = config.get_monitor_resolution()
-
-    # RSS panel dimensions (left side, below todo panel)
-    panel_width = int(width * 0.18)  # 18% of screen width
-    panel_height = int(height * 0.3)  # 30% of screen height
-    panel_x = 20  # Left margin
-    panel_y = int(height * 0.35)  # Start below todo panel (35% down)
-
-    # Get colors
     wal = config.get_wal_colors()
     colors = wal.get("colors", {})
-    bg = colors.get("color0", "#1d2021")
-    fg = colors.get("color15", "#ebdbb2")
-    accent = colors.get("color4", "#458588")
-
-    # Get font
     font_im, _ = config.get_font()
 
-    # Build text content
-    lines = [
-        "RSS Feed",
-        "=" * 40,
-    ]
+    # Get colors with proper fallbacks
+    bg = colors.get("color0", "#1d2021") or "#1d2021"
+    fg = colors.get("color15", "#ebdbb2") or "#ebdbb2"
 
-    for entry in entries[:7]:
-        # Truncate title to fit panel width (~50 chars)
-        title = entry.title[:50] + "..." if len(entry.title) > 50 else entry.title
-        source = entry.source[:20]
-        lines.append(f"• {title}")
-        lines.append(f"  [{source}]")
+    # Find a good accent color from available colors
+    accent = None
+    for key in ("color10", "color11", "color12", "color4", "color6", "color3"):
+        c = colors.get(key, "")
+        if c:
+            accent = c
+            break
+    if not accent:
+        accent = "#83a598"  # Default blue-green
 
-    # Create text content
-    text_content = "\n".join(lines)
+    # Panel dimensions: left side, below todo panel
+    panel_w = int(width * 0.18)  # 18% of screen width
+    panel_h = int(height * 0.3)  # 30% of screen height
+    pad_x = 20
+    pad_y = 40
+    line_height = 20
+    title_size = 14
+    item_size = 10
+    header_height = 35
 
-    # Create overlay with ImageMagick
-    magick_cmds = [
+    # Limit items to what fits on screen
+    max_items = (panel_h - pad_y * 2 - header_height) // line_height
+    display_items = entries[:max_items]
+    remaining = len(entries) - len(display_items)
+
+    # Build ImageMagick draw commands
+    draw_cmds = []
+
+    # Semi-transparent dark background panel with rounded corners
+    draw_cmds.append(
+        f"roundrectangle {pad_x - 10},{pad_y - 10} "
+        f"{panel_w - 10},{pad_y + header_height + len(display_items) * line_height + 15} "
+        f"10,10"
+    )
+
+    magick_args = [
         "magick",
         "-size",
-        f"{panel_width}x{panel_height}",
-        "xc:none",  # Transparent background
+        f"{panel_w}x{panel_h}",
+        "xc:none",
+        # Draw the background panel
+        "-fill",
+        f"{bg}C0",
+        "-stroke",
+        f"{accent}80",
+        "-strokewidth",
+        "1",
+        "-draw",
+        draw_cmds[0],
+        # Title
         "-font",
         font_im,
-        "-pointsize",
-        "14",
         "-fill",
-        fg,
+        accent,
+        "-strokewidth",
+        "0",
+        "-pointsize",
+        str(title_size),
         "-gravity",
         "NorthWest",
         "-annotate",
-        f"+10+10",
-        text_content.replace("\n", "\\n"),
-        str(output_path),
+        f"+{pad_x}+{pad_y}",
+        "  RSS Feed",
     ]
+
+    # Draw each RSS entry
+    y = pad_y + header_height
+    for entry in display_items:
+        # Truncate long titles
+        title = entry.title[:45] + "..." if len(entry.title) > 45 else entry.title
+        line_text = f"• {title}"
+
+        magick_args.extend(
+            [
+                "-fill",
+                fg,
+                "-pointsize",
+                str(item_size),
+                "-annotate",
+                f"+{pad_x}+{y}",
+                line_text,
+            ]
+        )
+        y += line_height
+
+    # Show remaining count if truncated
+    if remaining > 0:
+        magick_args.extend(
+            [
+                "-fill",
+                f"{fg}88",
+                "-pointsize",
+                str(item_size - 1),
+                "-annotate",
+                f"+{pad_x}+{y + 5}",
+                f"  +{remaining} more...",
+            ]
+        )
+
+    magick_args.append(str(output_path))
 
     try:
         subprocess.run(
-            magick_cmds,
+            magick_args,
             check=True,
             capture_output=True,
             text=True,
