@@ -39,7 +39,7 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 _config_cache: dict | None = None
 
 
-def _load_config() -> dict:
+def _load_config() -> dict[str, Any]:
     """Load user config from config.json, or return empty dict."""
     global _config_cache
     if _config_cache is not None:
@@ -84,14 +84,16 @@ def _get(key: str, default: Any = None) -> Any:
 
 
 def _default_brain_dir() -> Path:
+    """Return the default brain directory path."""
     return Path.home() / "Documents" / "brain"
 
 
 def _default_wallpaper_output() -> Path:
+    """Return the default wallpaper output path."""
     return Path.home() / "Pictures" / "active_brain_wallpaper.png"
 
 
-def _apply_config():
+def _apply_config() -> None:
     """Apply loaded config to module-level constants."""
     global BRAIN_DIR, DUMP_FILE, TODO_FILE, GRAPH_OUTPUT, TODO_OVERLAY
     global WALLPAPER_OUTPUT, ORIGINAL_WALLPAPER_CACHE
@@ -676,7 +678,7 @@ _DEFAULT_COLORS = {
 }
 
 
-def get_wal_colors() -> dict:
+def get_wal_colors() -> dict[str, Any]:
     """Load color scheme from pywal, config, or fallback defaults.
 
     Checks (in order):
@@ -744,7 +746,7 @@ def get_disabled_plugins() -> list[str]:
     return []
 
 
-def get_plugin_config(plugin_name: str) -> dict:
+def get_plugin_config(plugin_name: str) -> dict[str, Any]:
     """Return per-plugin config from config.json plugins.config section."""
     cfg = _get(f"plugins.config.{plugin_name}")
     if cfg and isinstance(cfg, dict):
