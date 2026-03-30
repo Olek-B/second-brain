@@ -21,9 +21,9 @@ from textual.widgets import (
 )
 
 from . import config
-from .analytics import get_full_analytics, format_analytics_dashboard
-from .rss_reader import load_feeds, get_all_entries
+from .analytics import format_analytics_dashboard, get_full_analytics
 from .plugins import get_manager
+from .rss_reader import get_all_entries, load_feeds
 
 # Pattern to find [[wikilinks]] including [[target|display text]] form.
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
@@ -172,9 +172,7 @@ class PreviewPane(Markdown):
                 parsed = urlparse(event.href)
                 query = parse_qs(parsed.query)
                 search_term = query.get("search", ["topic"])[0]
-                self.app.call_from_thread(
-                    self._set_status, f"Opening Wikipedia: {search_term}..."
-                )  # type: ignore[attr-defined]
+                self.app.call_from_thread(self._set_status, f"Opening Wikipedia: {search_term}...")  # type: ignore[attr-defined]
             except Exception:
                 pass
             # Let Textual handle opening the browser
@@ -187,9 +185,7 @@ class PreviewPane(Markdown):
                 domain = parsed.netloc or parsed.path.split("/")[0]
                 if domain.startswith("www."):
                     domain = domain[4:]
-                self.app.call_from_thread(
-                    self._set_status, f"Opening: {domain}"
-                )  # type: ignore[attr-defined]
+                self.app.call_from_thread(self._set_status, f"Opening: {domain}")  # type: ignore[attr-defined]
 
                 # --- Hook: on_external_link_clicked ---
                 pm = get_manager()
@@ -831,7 +827,7 @@ class BrainApp(App):
                 "*No investments tracked yet.*\n\n"
                 "Add investments using the CLI:\n"
                 "```\n"
-                "second-brain invest \"{ale} allegro - 3 - 25.50\"\n"
+                'second-brain invest "{ale} allegro - 3 - 25.50"\n'
                 "```\n\n"
                 "Format: `{ticker} name - shares [- buy_price]`\n\n"
                 "The buy price is used to calculate your gain/loss."
@@ -843,9 +839,7 @@ class BrainApp(App):
         content = "## Investment Portfolio\n\n"
 
         # Summary
-        total_gain_loss = sum(
-            (inv.gain_loss or 0) for inv in investments if inv.current_price
-        )
+        total_gain_loss = sum((inv.gain_loss or 0) for inv in investments if inv.current_price)
         content += "**Portfolio Summary:**\n"
         content += f"- **Total Value:** {summary['total_value']:.2f} PLN\n"
         gain_loss_sign = "+" if total_gain_loss >= 0 else ""
@@ -889,36 +883,36 @@ class BrainApp(App):
         """Show RSS feed browser in the preview pane."""
         title = self.query_one("#preview-title", Static)
         preview = self.query_one("#preview", PreviewPane)
-        
+
         title.update("📰 RSS Feed Reader")
         self._set_status(" Loading feeds...")
-        
+
         feeds = load_feeds()
-        
+
         if not feeds:
             preview.set_content(
                 "*No RSS feeds configured.*\n\n"
                 "Add feeds using the CLI:\n"
                 "```\n"
-                "second-brain rss --add \"Channel Name\" \"https://youtube.com/feeds/videos.xml?channel_id=XXX\"\n"
+                'second-brain rss --add "Channel Name" "https://youtube.com/feeds/videos.xml?channel_id=XXX"\n'
                 "```\n\n"
                 "Or edit `rss.md` in your brain directory directly."
             )
             self._set_status(" No feeds configured")
             return
-        
+
         # Build markdown feed browser
         content = "## Configured Feeds\n\n"
-        
+
         for feed in feeds:
             content += f"### {feed.name} ({feed.feed_type})\n"
             content += f"URL: `{feed.url}`\n\n"
-        
+
         content += "---\n\n"
         content += "## Latest Entries\n\n"
-        
+
         entries = get_all_entries()
-        
+
         if entries:
             for entry in entries[:20]:  # Show 20 most recent
                 time_str = entry.published.strftime("%Y-%m-%d %H:%M")
@@ -929,7 +923,7 @@ class BrainApp(App):
                 content += "---\n\n"
         else:
             content += "*No entries fetched yet. Press `R` to refresh.*\n"
-        
+
         content += "\n*Tip: Click any link to open in browser. Press `R` to refresh feeds.*"
 
         preview.set_content(content)
@@ -948,14 +942,11 @@ class BrainApp(App):
             feeds = load_feeds()
 
             # Update the preview pane with refreshed content
-            title = self.query_one("#preview-title", Static)
+            self.query_one("#preview-title", Static)
             preview = self.query_one("#preview", PreviewPane)
 
             if not feeds:
-                self.app.call_from_thread(
-                    self._set_status,
-                    " No feeds configured"
-                )
+                self.app.call_from_thread(self._set_status, " No feeds configured")
                 return
 
             # Rebuild content (same as action_view_rss)
@@ -979,8 +970,7 @@ class BrainApp(App):
 
             self.app.call_from_thread(preview.set_content, content)
             self.app.call_from_thread(
-                self._set_status,
-                f" Refreshed {len(feeds)} feeds, {len(entries)} entries"
+                self._set_status, f" Refreshed {len(feeds)} feeds, {len(entries)} entries"
             )
 
         except Exception as e:
