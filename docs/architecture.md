@@ -44,6 +44,29 @@ User writes raw thoughts
 
 ## Module Responsibilities
 
+### Package Structure
+
+The codebase is organized into three main packages:
+
+**`second_brain/tui/`** - Terminal User Interface (Textual-based)
+- `app.py` - Main BrainApp class and event loop
+- `widgets.py` - Custom widgets (FileList, PreviewPane, WikiLinkClicked)
+- `actions.py` - All action_* handlers for keybindings
+- `styles.py` - CSS style definitions
+- `__init__.py` - Package exports with backward compatibility
+
+**`second_brain/wallpaper/`** - Wallpaper Compositing
+- `overlays.py` - Render overlay PNGs (todo, RSS, investments)
+- `composite.py` - Layer overlays onto base wallpaper
+- `setter.py` - Set wallpaper via backend, update caches
+- `utils.py` - Helper functions (_parse_todos, _parse_investments)
+- `__init__.py` - Package exports with backward compatibility
+
+**`second_brain/cli/`** - Command Line Interface
+- `main.py` - Argument parsing, command dispatch
+- `commands.py` - All _run_* command handlers
+- `__init__.py` - Package exports
+
 ### `config.py` (673 lines)
 
 The central configuration module. Handles:
