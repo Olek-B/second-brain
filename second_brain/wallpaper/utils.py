@@ -44,7 +44,7 @@ def _parse_investments() -> dict | None:
 
     Returns dict with investments list and summary, or None if no investments exist.
     """
-    from .investments import get_portfolio_summary, load_investments
+    from ..investments import get_portfolio_summary, load_investments
 
     investments = load_investments()
     summary = get_portfolio_summary()
