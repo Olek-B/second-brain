@@ -281,7 +281,9 @@ examples:
             if not files_with_backlinks:
                 log.info("No backlinks found in your brain.")
             else:
-                log.info("Backlink Summary (%d files with incoming links):\n", len(files_with_backlinks))
+                log.info(
+                    "Backlink Summary (%d files with incoming links):\n", len(files_with_backlinks)
+                )
                 for fname in sorted(files_with_backlinks.keys()):
                     blist = files_with_backlinks[fname]
                     log.info("  %s (%d backlinks)", fname, len(blist))
@@ -516,7 +518,13 @@ examples:
                 log.error("Error: %s", e)
                 sys.exit(1)
 
-            log.info("Adding/updating investment: %s (%s) - %.2f shares @ %.2f", name, ticker, shares, buy_price)
+            log.info(
+                "Adding/updating investment: %s (%s) - %.2f shares @ %.2f",
+                name,
+                ticker,
+                shares,
+                buy_price,
+            )
             try:
                 investment = update_investment(ticker, name, shares, buy_price)
                 if investment.current_price:
@@ -569,8 +577,7 @@ examples:
 
         if librus_plugin is None:
             log.error(
-                "Error: librus_sync plugin not loaded.\n"
-                "Enable it in config.json: plugins.enabled"
+                "Error: librus_sync plugin not loaded.\nEnable it in config.json: plugins.enabled"
             )
             sys.exit(1)
 
@@ -588,61 +595,61 @@ def _run_rss(
     remove: str | None = None,
 ) -> None:
     """Run RSS feed commands.
-    
+
     Args:
         add: Tuple of (name, url) to add new feed.
         remove: Name of feed to remove.
     """
-    from .rss_reader import RSSFeed, load_feeds, save_feeds, get_all_entries
-    
+    from .rss_reader import RSSFeed, get_all_entries, load_feeds, save_feeds
+
     if add:
         # Add new feed
         name, url = add
         feeds = load_feeds()
-        
+
         # Check if already exists
         for feed in feeds:
             if feed.name.lower() == name.lower():
                 log.error("Feed '%s' already exists", name)
                 sys.exit(1)
-        
+
         # Determine feed type
         feed_type = "youtube" if "youtube.com" in url else "standard"
-        
+
         feeds.append(RSSFeed(name=name, url=url, feed_type=feed_type))
         save_feeds(feeds)
         log.info("Added %s feed: %s (%s)", feed_type, name, url)
-        
+
     elif remove:
         # Remove feed
         feeds = load_feeds()
         original_count = len(feeds)
         feeds = [f for f in feeds if f.name.lower() != remove.lower()]
-        
+
         if len(feeds) == original_count:
             log.error("Feed '%s' not found", remove)
             sys.exit(1)
-        
+
         save_feeds(feeds)
         log.info("Removed feed: %s", remove)
-        
+
     else:
         # List feeds or fetch entries
         feeds = load_feeds()
-        
+
         if not feeds:
             log.info("No RSS feeds configured.")
-            log.info("Add feeds with: second-brain rss --add \"Name\" \"URL\"")
+            log.info('Add feeds with: second-brain rss --add "Name" "URL"')
             return
-        
+
         log.info("Configured RSS Feeds (%d):", len(feeds))
         for feed in feeds:
             log.info("  %s [%s] - %s", feed.name, feed.feed_type, feed.url)
-        
+
         # Always fetch latest entries when listing
         log.info("\nFetching latest entries...")
         entries = get_all_entries()
-        
+
         if entries:
             log.info("\nLatest Entries (%d):", len(entries))
             for entry in entries[:10]:  # Show 10 most recent
@@ -659,7 +666,7 @@ def _run_rss(
 
 def _run_analytics(days: int = 30, export_format: str | None = None) -> None:
     """Run analytics and display/export results.
-    
+
     Args:
         days: Number of days for trend analysis.
         export_format: Export format ('json', 'markdown', or None for dashboard).
@@ -670,15 +677,15 @@ def _run_analytics(days: int = 30, export_format: str | None = None) -> None:
         format_analytics_dashboard,
         get_full_analytics,
     )
-    
+
     log.info("Gathering analytics...")
-    
+
     try:
         data = get_full_analytics(days=days)
     except Exception as e:
         log.error("Error gathering analytics: %s", e)
         sys.exit(1)
-    
+
     if export_format == "json":
         print(export_analytics_json(data))
     elif export_format == "markdown":
