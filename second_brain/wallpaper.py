@@ -305,13 +305,17 @@ def render_rss_overlay(output_path: Path | None = None) -> Path | None:
     display_items = entries[:max_items]
     remaining = len(entries) - len(display_items)
 
+    # Calculate actual content height for panel background
+    content_height = header_height + (len(display_items) * (line_height * 2 - 4))
+
     # Build ImageMagick draw commands
     draw_cmds = []
 
     # Semi-transparent dark background panel with rounded corners
+    # Panel extends from pad_y to pad_y + content_height + padding
     draw_cmds.append(
         f"roundrectangle {pad_x - 10},{pad_y - 10} "
-        f"{panel_w - 10},{pad_y + header_height + len(display_items) * line_height + 15} "
+        f"{panel_w - 20},{pad_y + content_height + 10} "
         f"10,10"
     )
 
